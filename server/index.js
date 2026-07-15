@@ -227,9 +227,16 @@ app.post('/api/updates/install', requireAdmin, async (_req, res) => {
     const pending = { repository, version: release.latestVersion, artifactApiUrl: release.artifact.apiUrl, digest: release.artifact.digest, requestedAt: new Date().toISOString() };
     fs.writeFileSync(path.join(dataDir, 'pending-update.json'), JSON.stringify(pending, null, 2));
     fs.writeFileSync(path.join(dataDir, 'update-status.json'), JSON.stringify({ status: 'queued', message: `HouseOS ${release.latestVersion} wurde zur Installation vorgemerkt.`, updatedAt: new Date().toISOString(), version: release.latestVersion }, null, 2));
-    execFile('sudo', ['-n', 'systemctl', '--no-block', 'start', 'houseos-updater.service'], { windowsHide: true }, () => {});
-    res.status(202).json({ ok: true, message: `HouseOS ${release.latestVersion} wird installiert. Das System startet anschließend neu.` });
+    execFile('sudo', ['-n', 'systemctl', '--no-block', 'start', 'houseos-updater.service'], { windowsHide: true }, (error) => {
+      if (error) fs.writeFileSync(path.join(dataDir, 'update-status.json'), JSON.stringify({ status: 'error', message: `Updater konnte nicht gestartet werden: ${error.message}`, updatedAt: new Date().toISOString(), version: release.latestVersion }, null, 2));
+    });
+    res.status(202).json({ ok: true, status: 'queued', version: release.latestVersion, message: `HouseOS ${release.latestVersion} wurde vorbereitet. Der Installationsdienst startet jetzt.` });
   } catch (error) { res.status(502).json({ error: error instanceof Error ? error.message : 'Update konnte nicht gestartet werden.' }); }
+});
+
+app.get('/api/updates/status', requireAdmin, (_req, res) => {
+  try { res.json(JSON.parse(fs.readFileSync(path.join(dataDir, 'update-status.json'), 'utf8'))); }
+  catch { res.json({ status: 'idle', message: 'Keine Installation aktiv.' }); }
 });
 
 const contextCache = new Map();

@@ -18,7 +18,7 @@ async function main() {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(pending.repository || '')) throw new Error('Ungültiges Repository.');
   if (!/^https:\/\/api\.github\.com\/repos\//.test(pending.artifactApiUrl || '')) throw new Error('Ungültige Downloadquelle.');
   if (!/^[a-f0-9]{64}$/i.test(pending.digest || '')) throw new Error('SHA-256-Prüfsumme fehlt.');
-  writeStatus('installing', `HouseOS ${pending.version} wird installiert.`, { version: pending.version });
+  writeStatus('downloading', `HouseOS ${pending.version} wird heruntergeladen.`, { version: pending.version, progress: 12 });
   fs.rmSync(workRoot, { recursive: true, force: true });
   const stage = path.join(workRoot, 'stage');
   const backup = path.join(workRoot, 'backup');
@@ -26,20 +26,25 @@ async function main() {
   const response = await fetch(pending.artifactApiUrl, { headers: { Accept: 'application/octet-stream', 'User-Agent': 'HouseOS-Updater', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, redirect: 'follow' });
   if (!response.ok) throw new Error(`Download fehlgeschlagen: ${response.status}`);
   const archive = Buffer.from(await response.arrayBuffer());
+  writeStatus('verifying', 'Download wird mit der SHA-256-Prüfsumme verglichen.', { version: pending.version, progress: 30 });
   const actualDigest = createHash('sha256').update(archive).digest('hex');
   if (actualDigest.toLowerCase() !== pending.digest.toLowerCase()) throw new Error('SHA-256-Prüfung fehlgeschlagen.');
   const archivePath = path.join(workRoot, 'houseos.tar.gz');
   fs.writeFileSync(archivePath, archive);
+  writeStatus('extracting', 'Updatepaket wird entpackt und geprüft.', { version: pending.version, progress: 45 });
   run('tar', ['-xzf', archivePath, '-C', stage]);
   const stagedPackage = JSON.parse(fs.readFileSync(path.join(stage, 'package.json'), 'utf8'));
   if (String(stagedPackage.version) !== String(pending.version)) throw new Error('Release-Version stimmt nicht mit dem Paket überein.');
   fs.mkdirSync(backup, { recursive: true });
+  writeStatus('backup', 'Die aktuelle HouseOS-Installation wird gesichert.', { version: pending.version, progress: 58 });
   run('rsync', ['-a', '--delete', '--exclude', 'data', '--exclude', '.env', '--exclude', '.updates', `${home}/`, `${backup}/`]);
   try {
+    writeStatus('installing', 'Neue Programmdateien werden installiert.', { version: pending.version, progress: 72 });
     run('rsync', ['-a', '--delete', '--exclude', 'data', '--exclude', '.env', '--exclude', '.updates', `${stage}/`, `${home}/`]);
+    writeStatus('dependencies', 'Abhängigkeiten werden eingerichtet.', { version: pending.version, progress: 86 });
     run('npm', ['ci', '--omit=dev'], { cwd: home });
     fs.rmSync(pendingPath, { force: true });
-    writeStatus('installed', `HouseOS ${pending.version} wurde installiert und wird neu gestartet.`, { version: pending.version });
+    writeStatus('installed', `HouseOS ${pending.version} wurde installiert und wird neu gestartet.`, { version: pending.version, progress: 100 });
     run('systemctl', ['restart', 'houseos.service']);
   } catch (error) {
     run('rsync', ['-a', '--delete', `${backup}/`, `${home}/`]);
