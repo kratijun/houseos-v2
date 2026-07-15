@@ -43,14 +43,19 @@ async function main() {
     run('rsync', ['-a', '--delete', '--exclude', 'data', '--exclude', '.env', '--exclude', '.updates', `${stage}/`, `${home}/`]);
     writeStatus('dependencies', 'Abhängigkeiten werden eingerichtet.', { version: pending.version, progress: 86 });
     run('npm', ['ci', '--omit=dev'], { cwd: home });
+    run('bash', [path.join(home, 'deploy', 'optimize-kiosk-start.sh')]);
     fs.rmSync(pendingPath, { force: true });
-    writeStatus('installed', `HouseOS ${pending.version} wurde installiert und wird neu gestartet.`, { version: pending.version, progress: 100 });
-    run('systemctl', ['restart', 'houseos.service']);
   } catch (error) {
     run('rsync', ['-a', '--delete', `${backup}/`, `${home}/`]);
     writeStatus('rolled-back', `Update fehlgeschlagen, vorherige Version wiederhergestellt: ${error.message}`, { version: pending.version });
     run('systemctl', ['restart', 'houseos.service']);
     throw error;
+  }
+  writeStatus('restarting', `HouseOS ${pending.version} ist installiert. Der HouseOS-Dienst wird jetzt neu gestartet.`, { version: pending.version, progress: 100, restartTarget: 'houseos' });
+  try { run('systemctl', ['restart', 'houseos.service']); }
+  catch (error) {
+    writeStatus('error', `HouseOS ${pending.version} wurde installiert, aber der HouseOS-Dienst konnte nicht neu gestartet werden: ${error.message}`, { version: pending.version, progress: 100 });
+    process.exitCode = 1;
   }
 }
 
