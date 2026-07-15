@@ -1,0 +1,40 @@
+name: HouseOS Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Verify tag matches package version
+        run: test "${GITHUB_REF_NAME#v}" = "$(node -p "require('./package.json').version")"
+      - name: Build update archive
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir release
+          rsync -a --exclude node_modules --exclude data --exclude .git --exclude release ./ release/
+          tar -czf "houseos-${VERSION}.tar.gz" -C release .
+          sha256sum "houseos-${VERSION}.tar.gz" >"houseos-${VERSION}.tar.gz.sha256"
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "${GITHUB_REF_NAME}" \
+            "houseos-${VERSION}.tar.gz" \
+            "houseos-${VERSION}.tar.gz.sha256" \
+            --generate-notes \
+            --title "HouseOS ${VERSION}"

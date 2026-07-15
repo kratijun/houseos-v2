@@ -1,0 +1,11 @@
+[Unit]
+Description=Install a verified HouseOS GitHub release
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/houseos.env
+ExecStart=/usr/bin/node /opt/houseos/scripts/install-update.mjs
+Nice=10
+
