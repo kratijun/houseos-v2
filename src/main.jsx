@@ -10,6 +10,7 @@ import {
   Info, KeyRound, Eye, Contrast, Smartphone, SlidersHorizontal,
   Power, PowerOff, Lock, AlertTriangle, ExternalLink, Pause, Play,
 } from 'lucide-react';
+import packageInfo from '../package.json';
 import './styles.css';
 
 const APP_DEFS = {
@@ -193,7 +194,7 @@ function App() {
 }
 
 function BootScreen() {
-  return <div className="boot"><div className="boot-orbit"><Home size={36} /></div><div className="boot-logo"><span>house<b>os</b></span></div><p>RASPBERRY PI · SYSTEMSTART</p><div className="boot-line"><i /></div><div className="boot-status"><span>Benutzerprofile</span><span>Datenbank</span><span>Oberfläche</span></div></div>;
+  return <div className="boot" role="status" aria-label="HouseOS wird gestartet"><div className="boot-orbit"><Home size={42} strokeWidth={1.65} /></div><div className="boot-logo">houseos</div><div className="boot-line"><i /></div><p>HouseOS wird gestartet …</p></div>;
 }
 
 function LoginScreen({ users, onAuthenticated, onUsersChanged, error, setError }) {
@@ -227,12 +228,14 @@ function LoginScreen({ users, onAuthenticated, onUsersChanged, error, setError }
     } catch (loginError) { setError(loginError.message); setPin(''); }
     finally { setBusy(false); }
   };
+  const now = new Date();
   return <main className="login-screen">
     <div className="login-glow one" /><div className="login-glow two" />
+    <div className="login-brand"><span><Home size={18} strokeWidth={1.8} /></span><strong>houseos</strong></div>
+    <div className="login-time"><strong>{now.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</strong><span>{now.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })}</span></div>
     <section className={`login-panel ${selected ? 'pin-mode' : 'user-mode'}`}>
-      <div className="login-brand"><span><Home size={19} /></span><strong>houseos</strong></div>
       {!selected ? <>
-        <div className="login-copy"><small>WILLKOMMEN ZU HAUSE</small><h1>Wer bist du?</h1><p>Wähle dein persönliches HouseOS-Profil.</p></div>
+        <div className="login-copy"><small>WILLKOMMEN ZU HAUSE</small><h1>Wer verwendet HouseOS?</h1><p>Wähle dein Profil, um fortzufahren.</p></div>
         <div className="login-users">{users.map(user => <button key={user.id} onClick={() => choose(user)}><ProfileAvatar member={user} className="login-avatar profile-image" /><strong>{user.name}</strong><small>{user.role}</small></button>)}</div>
         {!users.length && <p className="login-error">Der HouseOS-Dienst ist nicht erreichbar.</p>}
       </> : <form onSubmit={submit} className="pin-login">
@@ -246,7 +249,7 @@ function LoginScreen({ users, onAuthenticated, onUsersChanged, error, setError }
         <button className="unlock-button" disabled={busy || pin.length < 4}><LockKeyhole size={17} /> {busy ? 'Wird entsperrt …' : stage === 'create' ? 'Weiter' : 'Entsperren'}</button>
       </form>}
     </section>
-    <div className="login-time"><Clock3 size={14} /> {new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</div>
+    <div className="login-footer"><Lock size={12} /> Persönlich. Sicher. Zu Hause.</div>
   </main>;
 }
 
@@ -516,7 +519,7 @@ function SettingsApp({ member, onMemberChange, preferences, setPreferences, item
       {section === 'profile' && <section className="preference-panel"><header><span className="settings-kicker">PERSÖNLICH</span><h2>Dein Profil</h2><p>So erscheinst du in HouseOS.</p></header><form className="profile-settings" onSubmit={saveProfile}><div className="profile-photo-wrap"><ProfileAvatar member={{ ...member, name: profileName }} preferences={preferences} className="profile-photo profile-image" /><button type="button" onClick={() => fileInput.current?.click()}><Camera size={15} /> Foto ändern</button><input ref={fileInput} hidden type="file" accept="image/*" onChange={uploadAvatar} /></div><div className="settings-card profile-fields"><label><span>Name</span><input value={profileName} onChange={event => setProfileName(event.target.value)} /></label><div className="settings-row"><span><strong>Rolle</strong><small>Vom Haushaltsadmin verwaltet</small></span><b>{member.role}</b></div></div><div className="profile-actions">{preferences.avatar && <button type="button" className="text-button danger" onClick={() => updatePreference('avatar', '')}>Foto entfernen</button>}<button className="settings-save" disabled={saving}>{saving ? 'Wird gespeichert …' : 'Änderungen sichern'}</button></div>{error && <p className="settings-error">{error}</p>}</form></section>}
       {section === 'appearance' && <AppearanceSettings preferences={preferences} updatePreference={updatePreference} />}
       {section === 'notifications' && <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Mitteilungen" description="Lege fest, wie HouseOS dich informiert." /><div className="settings-card"><SettingSwitch icon={Bell} color="#ff3b30" title="Mitteilungen erlauben" subtitle="Hinweise zu Aufgaben und gemeinsamen Listen" checked={preferences.notifications} onChange={value => updatePreference('notifications', value)} /><SettingSwitch icon={Volume2} color="#ff9500" title="Töne" subtitle="Bei wichtigen Hinweisen einen Ton abspielen" checked={preferences.sounds} onChange={value => updatePreference('sounds', value)} /></div></section>}
-      {section === 'accessibility' && <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Bedienungshilfen" description="Passe Lesbarkeit und Bewegungen an deine Bedürfnisse an." /><div className="settings-card"><SettingSwitch icon={Eye} color="#007aff" title="Größerer Text" subtitle="Schrift in HouseOS etwas vergrößern" checked={preferences.largeText} onChange={value => updatePreference('largeText', value)} /><SettingSwitch icon={Contrast} color="#5856d6" title="Mehr Kontrast" subtitle="Trennlinien und Flächen deutlicher anzeigen" checked={preferences.highContrast} onChange={value => updatePreference('highContrast', value)} /><SettingSwitch icon={Accessibility} color="#34c759" title="Bewegung reduzieren" subtitle="Animationen und Übergänge minimieren" checked={preferences.reduceMotion} onChange={value => updatePreference('reduceMotion', value)} /></div></section>}
+      {section === 'accessibility' && <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Bedienungshilfen" description="Passe Lesbarkeit und Bewegungen an deine Bedürfnisse an." /><div className="settings-card"><SettingSwitch icon={Eye} color="#007aff" title="Größerer Text" subtitle="Die gesamte HouseOS-Oberfläche deutlich vergrößern" checked={preferences.largeText} onChange={value => updatePreference('largeText', value)} /><SettingSwitch icon={Contrast} color="#5856d6" title="Mehr Kontrast" subtitle="Trennlinien und Flächen deutlicher anzeigen" checked={preferences.highContrast} onChange={value => updatePreference('highContrast', value)} /><SettingSwitch icon={Accessibility} color="#34c759" title="Bewegung reduzieren" subtitle="Animationen und Übergänge minimieren" checked={preferences.reduceMotion} onChange={value => updatePreference('reduceMotion', value)} /></div></section>}
       {section === 'general' && <GeneralSettings preferences={preferences} updatePreference={updatePreference} member={member} notify={notify} device={device} refreshDevice={refreshDevice} />}
       {section === 'users' && member.isAdmin && <section className="admin-settings-panel"><Members embedded items={items} setItems={setItems} tasks={tasks} setTasks={setTasks} notify={notify} /></section>}
       {['system','updates'].includes(section) && member.isAdmin && <section className="admin-settings-panel"><SystemPanel section={section} notify={notify} /></section>}
@@ -561,7 +564,7 @@ function GeneralSettings({ preferences, updatePreference, member, notify, device
     <h3 className="settings-section-title">Standort und Wetter</h3>
     <form className="settings-card city-settings" onSubmit={saveCity}><div className="settings-row icon-row"><i style={{ '--category': '#34c759' }}><MapPin size={15} /></i><span><strong>Wetterstadt</strong><small>{city ? `Wetter für ${device.location}` : 'Leer lassen für automatische Standorterkennung'}</small></span><input value={city} onChange={event => setCity(event.target.value)} placeholder="z. B. Wien" autoComplete="off" disabled={!member.isAdmin || savingCity} /><button className="settings-save" disabled={!member.isAdmin || savingCity}>{savingCity ? 'Prüfe …' : 'Speichern'}</button></div>{!member.isAdmin && <p className="device-hint">Nur der Haushaltsadmin kann die Wetterstadt ändern.</p>}{cityError && <p className="settings-error">{cityError}</p>}</form>
     <h3 className="settings-section-title">HouseOS</h3>
-    <div className="settings-card"><div className="settings-row icon-row"><i style={{ '--category': '#007aff' }}><Languages size={15} /></i><span><strong>Sprache</strong><small>Sprache der Oberfläche</small></span><select value={preferences.language} onChange={event => updatePreference('language', event.target.value)}><option>Deutsch</option><option>English</option></select></div><div className="settings-row icon-row"><i style={{ '--category': '#8e8e93' }}><Info size={15} /></i><span><strong>HouseOS</strong><small>Persönliches Zuhause-Dashboard</small></span><b>Version 0.5.0</b></div><div className="settings-row icon-row"><i style={{ '--category': '#5856d6' }}><KeyRound size={15} /></i><span><strong>PIN & Sicherheit</strong><small>Dein Profil wird beim Verlassen gesperrt</small></span><b>Aktiv</b></div></div>
+    <div className="settings-card"><div className="settings-row icon-row"><i style={{ '--category': '#007aff' }}><Languages size={15} /></i><span><strong>Sprache</strong><small>Sprache der Oberfläche</small></span><select value={preferences.language} onChange={event => updatePreference('language', event.target.value)}><option>Deutsch</option><option>English</option></select></div><div className="settings-row icon-row"><i style={{ '--category': '#8e8e93' }}><Info size={15} /></i><span><strong>HouseOS</strong><small>Persönliches Zuhause-Dashboard</small></span><b>Version {packageInfo.version}</b></div><div className="settings-row icon-row"><i style={{ '--category': '#5856d6' }}><KeyRound size={15} /></i><span><strong>PIN & Sicherheit</strong><small>Dein Profil wird beim Verlassen gesperrt</small></span><b>Aktiv</b></div></div>
   </section>;
 }
 
