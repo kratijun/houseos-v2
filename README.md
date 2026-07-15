@@ -45,7 +45,7 @@ sudo bash deploy/install-pi.sh OWNER/REPO pi
 sudo reboot
 ```
 
-Dabei werden HouseOS und CUPS als Systemdienste eingerichtet, Desktop-Autologin aktiviert und Chromium über `labwc` ohne Browserleisten im Kioskmodus gestartet. HouseOS startet bereits vor der grafischen Oberfläche; der Kiosk steht an erster Stelle und hält den übrigen Desktop-Autostart bis zum bewussten Verlassen des Kiosks zurück. Dadurch erscheint nach dem Einschalten möglichst direkt HouseOS. Der Benutzername `pi` kann durch den tatsächlich verwendeten Desktop-Benutzer ersetzt werden. Node.js 20 oder neuer muss bereits installiert sein.
+Dabei werden HouseOS, der überwachte Chromium-Kiosk und CUPS als Systemdienste eingerichtet und Desktop-Autologin aktiviert. HouseOS startet bereits vor der grafischen Oberfläche; `houseos-kiosk.service` wartet auf HouseOS und die grafische Sitzung und öffnet Chromium anschließend ohne Browserleisten. Beendet sich Chromium unerwartet, wird der Kiosk automatisch neu gestartet. Der Benutzername `pi` kann durch den tatsächlich verwendeten Desktop-Benutzer ersetzt werden. Node.js 20 oder neuer muss bereits installiert sein.
 
 ## Updates über GitHub Releases
 
@@ -58,11 +58,11 @@ HOUSEOS_GITHUB_REPO=OWNER/REPO
 Ein Release wird durch einen Git-Tag ausgelöst. Die Version in `package.json` muss zum Tag passen:
 
 ```bash
-git tag v0.5.0
-git push origin v0.5.0
+git tag v0.6.1
+git push origin v0.6.1
 ```
 
-Der Workflow `.github/workflows/release.yml` baut HouseOS und veröffentlicht `houseos-<version>.tar.gz`. HouseOS installiert ausschließlich ein Release-Artefakt mit von GitHub gemeldetem SHA-256-Digest. Vor der Installation wird der aktuelle Stand gesichert; schlägt die Installation fehl, stellt der Updater die vorherige Version wieder her. Nach einer erfolgreichen Installation zeigt HouseOS den Neustartstatus an, startet nur den HouseOS-Systemdienst neu und lädt die Oberfläche nach dem Wiederverbinden automatisch. Der Raspberry Pi selbst läuft dabei ohne Neustart weiter. Die SQLite-Datenbank liegt separat unter `/var/lib/houseos` und wird nicht überschrieben.
+Der Workflow `.github/workflows/release.yml` baut HouseOS und veröffentlicht `houseos-<version>.tar.gz`. HouseOS installiert ausschließlich ein Release-Artefakt mit von GitHub gemeldetem SHA-256-Digest. Vor der Installation wird der aktuelle Stand gesichert; schlägt die Installation fehl, stellt der Updater die vorherige Version wieder her. Nach einer erfolgreichen Installation wartet der Updater auf den HouseOS-Dienst und startet anschließend den überwachten Chromium-Kiosk neu. Der Raspberry Pi selbst läuft dabei ohne Neustart weiter. Die SQLite-Datenbank liegt separat unter `/var/lib/houseos` und wird nicht überschrieben.
 
 Für ein privates Repository kann zusätzlich ein nur lesbares Token in `/etc/houseos.env` hinterlegt werden:
 

@@ -11,6 +11,17 @@ const workRoot = path.resolve(process.env.HOUSEOS_UPDATE_DIR || '/var/tmp/houseo
 const token = process.env.GITHUB_TOKEN || '';
 const writeStatus = (status, message, extra = {}) => fs.writeFileSync(statusPath, JSON.stringify({ status, message, updatedAt: new Date().toISOString(), ...extra }, null, 2));
 const run = (command, args, options = {}) => execFileSync(command, args, { stdio: 'inherit', ...options });
+const waitForHouseOS = async (timeoutMs = 60_000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch('http://127.0.0.1:3001/api/health', { cache: 'no-store' });
+      if (response.ok) return;
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  throw new Error('HouseOS wurde nach dem Update nicht rechtzeitig erreichbar.');
+};
 
 async function main() {
   if (!fs.existsSync(pendingPath)) throw new Error('Kein vorbereitetes Update gefunden.');
@@ -43,7 +54,7 @@ async function main() {
     run('rsync', ['-a', '--delete', '--exclude', 'data', '--exclude', '.env', '--exclude', '.updates', `${stage}/`, `${home}/`]);
     writeStatus('dependencies', 'Abhängigkeiten werden eingerichtet.', { version: pending.version, progress: 86 });
     run('npm', ['ci', '--omit=dev'], { cwd: home });
-    run('bash', [path.join(home, 'deploy', 'optimize-kiosk-start.sh')]);
+    run('bash', [path.join(home, 'deploy', 'optimize-kiosk-start.sh')], { env: { ...process.env, HOUSEOS_DEFER_KIOSK_RESTART: '1' } });
     fs.rmSync(pendingPath, { force: true });
   } catch (error) {
     run('rsync', ['-a', '--delete', `${backup}/`, `${home}/`]);
@@ -51,10 +62,16 @@ async function main() {
     run('systemctl', ['restart', 'houseos.service']);
     throw error;
   }
-  writeStatus('restarting', `HouseOS ${pending.version} ist installiert. Der HouseOS-Dienst wird jetzt neu gestartet.`, { version: pending.version, progress: 100, restartTarget: 'houseos' });
-  try { run('systemctl', ['restart', 'houseos.service']); }
+  writeStatus('restarting', `HouseOS ${pending.version} ist installiert. Dienst und Kiosk werden jetzt neu gestartet.`, { version: pending.version, progress: 96, restartTarget: 'houseos' });
+  try {
+    run('systemctl', ['restart', 'houseos.service']);
+    await waitForHouseOS();
+    writeStatus('restarting', `HouseOS ${pending.version} läuft wieder. Der Kiosk wird geöffnet.`, { version: pending.version, progress: 99, restartTarget: 'kiosk' });
+    run('systemctl', ['restart', 'houseos-kiosk.service']);
+    writeStatus('installed', `HouseOS ${pending.version} wurde installiert und der Kiosk erfolgreich neu geöffnet.`, { version: pending.version, progress: 100, restartTarget: 'kiosk' });
+  }
   catch (error) {
-    writeStatus('error', `HouseOS ${pending.version} wurde installiert, aber der HouseOS-Dienst konnte nicht neu gestartet werden: ${error.message}`, { version: pending.version, progress: 100 });
+    writeStatus('error', `HouseOS ${pending.version} wurde installiert, aber Dienst oder Kiosk konnten nicht neu gestartet werden: ${error.message}`, { version: pending.version, progress: 100 });
     process.exitCode = 1;
   }
 }

@@ -1,0 +1,19 @@
+[Unit]
+Description=HouseOS Chromium kiosk
+After=houseos.service display-manager.service graphical.target
+Wants=houseos.service
+
+[Service]
+Type=simple
+User=@HOUSEOS_USER@
+Group=@HOUSEOS_USER@
+WorkingDirectory=@HOUSEOS_USER_HOME@
+Environment=HOME=@HOUSEOS_USER_HOME@
+Environment=XDG_RUNTIME_DIR=/run/user/@HOUSEOS_UID@
+Environment=DISPLAY=:0
+ExecStart=/opt/houseos/scripts/start-kiosk.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target
