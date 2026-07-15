@@ -29,6 +29,7 @@ while true; do
     --no-first-run \
     --disable-session-crashed-bubble \
     --disable-pinch \
+    --touch-events=enabled \
     --overscroll-history-navigation=0 \
     --start-maximized
   if [[ -f "${EXIT_KIOSK_FILE}" ]]; then

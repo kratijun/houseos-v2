@@ -177,6 +177,23 @@ function App() {
   const [users, setUsers] = useState([]);
   const [member, setMember] = useState(null);
   const [authError, setAuthError] = useState('');
+  useEffect(() => {
+    const root = document.documentElement;
+    const enableTouchUi = () => root.classList.add('touch-ui');
+    const detectTouchPointer = event => { if (event.pointerType === 'touch') enableTouchUi(); };
+    const preventBrowserGesture = event => { if (root.classList.contains('touch-ui')) event.preventDefault(); };
+    if (navigator.maxTouchPoints > 0 || window.matchMedia?.('(pointer: coarse)').matches) enableTouchUi();
+    window.addEventListener('touchstart', enableTouchUi, { passive: true, once: true });
+    window.addEventListener('pointerdown', detectTouchPointer, { passive: true });
+    window.addEventListener('contextmenu', preventBrowserGesture);
+    window.addEventListener('dragstart', preventBrowserGesture);
+    return () => {
+      window.removeEventListener('touchstart', enableTouchUi);
+      window.removeEventListener('pointerdown', detectTouchPointer);
+      window.removeEventListener('contextmenu', preventBrowserGesture);
+      window.removeEventListener('dragstart', preventBrowserGesture);
+    };
+  }, []);
   const refreshUsers = async () => {
     try { const response = await fetch('/api/auth/users'); setUsers(response.ok ? await response.json() : []); } catch { setUsers([]); }
   };
