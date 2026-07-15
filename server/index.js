@@ -241,8 +241,22 @@ app.get('/api/updates/status', requireAdmin, (_req, res) => {
 
 const contextCache = new Map();
 app.get('/api/device-context', requireAuth, async (req, res) => {
-  const latitude = Number(req.query.lat);
-  const longitude = Number(req.query.lon);
+  let latitudeValue = req.query.lat ?? process.env.HOUSEOS_LATITUDE;
+  let longitudeValue = req.query.lon ?? process.env.HOUSEOS_LONGITUDE;
+  if (latitudeValue === undefined || longitudeValue === undefined) {
+    try {
+      const locationResponse = await fetch('https://ipwho.is/');
+      if (!locationResponse.ok) throw new Error('IP-Standortdienst nicht erreichbar');
+      const ipLocation = await locationResponse.json();
+      if (!ipLocation.success) throw new Error(ipLocation.message || 'IP-Standort konnte nicht ermittelt werden');
+      latitudeValue = ipLocation.latitude;
+      longitudeValue = ipLocation.longitude;
+    } catch (error) {
+      return res.status(502).json({ error: error instanceof Error ? error.message : 'IP-Standort konnte nicht ermittelt werden.' });
+    }
+  }
+  const latitude = Number(latitudeValue);
+  const longitude = Number(longitudeValue);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return res.status(400).json({ error: 'Ungültige Koordinaten.' });
   const cacheKey = `${latitude.toFixed(2)},${longitude.toFixed(2)}`;
   const cached = contextCache.get(cacheKey);

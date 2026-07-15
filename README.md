@@ -29,6 +29,13 @@ npm start
 
 Für einen lokalen Kiosk kann Chromium direkt mit `http://127.0.0.1:3001` gestartet werden. HouseOS verwendet die Gerätezeit und fordert die Browser-Standortfreigabe an. Aus den Koordinaten werden Ortsname und Wetter geladen. Auf einem entfernten Gerät benötigt die Browser-Geolocation in der Regel HTTPS; `localhost` gilt als sicherer Kontext.
 
+Falls der Browser auf einem Gerät ohne GPS keinen Standort liefern kann, bestimmt HouseOS den ungefähren Ort automatisch anhand der öffentlichen IP-Adresse. Bei einem fest installierten Gerät können optional genauere Koordinaten in `/etc/houseos.env` hinterlegt werden:
+
+```ini
+HOUSEOS_LATITUDE=52.5200
+HOUSEOS_LONGITUDE=13.4050
+```
+
 ### Automatische Pi- und Kiosk-Einrichtung
 
 Auf Raspberry Pi OS 64-bit mit Desktop führt dieses Skript die produktive Einrichtung durch:
@@ -51,8 +58,8 @@ HOUSEOS_GITHUB_REPO=OWNER/REPO
 Ein Release wird durch einen Git-Tag ausgelöst. Die Version in `package.json` muss zum Tag passen:
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.5.0
+git push origin v0.5.0
 ```
 
 Der Workflow `.github/workflows/release.yml` baut HouseOS und veröffentlicht `houseos-<version>.tar.gz`. HouseOS installiert ausschließlich ein Release-Artefakt mit von GitHub gemeldetem SHA-256-Digest. Vor der Installation wird der aktuelle Stand gesichert; schlägt die Installation fehl, stellt der Updater die vorherige Version wieder her. Die SQLite-Datenbank liegt separat unter `/var/lib/houseos` und wird nicht überschrieben.

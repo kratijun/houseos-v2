@@ -139,17 +139,24 @@ function useDatabaseCollection(resource, fallback, enabled) {
 
 function useDeviceContext(enabled) {
   const [context, setContext] = useState({ location: 'Standort wird ermittelt …', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, weather: null, status: 'loading' });
-  const refresh = () => {
+  const refresh = async () => {
     if (!enabled) return;
-    if (!navigator.geolocation) return setContext(current => ({ ...current, location: 'Standort nicht verfügbar', status: 'error' }));
     setContext(current => ({ ...current, status: 'loading' }));
+    const useServerLocation = async () => {
+      try {
+        const response = await fetch('/api/device-context');
+        if (!response.ok) throw new Error();
+        setContext({ ...(await response.json()), status: 'ready' });
+      } catch { setContext(current => ({ ...current, location: 'Standort nicht verfügbar', status: 'error' })); }
+    };
+    if (!navigator.geolocation) return useServerLocation();
     navigator.geolocation.getCurrentPosition(async position => {
       try {
         const response = await fetch(`/api/device-context?lat=${encodeURIComponent(position.coords.latitude)}&lon=${encodeURIComponent(position.coords.longitude)}`);
         if (!response.ok) throw new Error();
         setContext({ ...(await response.json()), status: 'ready' });
       } catch { setContext(current => ({ ...current, location: 'Aktueller Standort', status: 'error' })); }
-    }, () => setContext(current => ({ ...current, location: 'Standort nicht freigegeben', status: 'denied' })), { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 });
+    }, useServerLocation, { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 });
   };
   useEffect(() => { refresh(); }, [enabled]);
   return [context, refresh];
@@ -285,7 +292,7 @@ function Desktop({ currentMember, onMemberChange, onLogout }) {
       {id === 'printer' && <PrintCenter tasks={tasks} shopping={shopping} notify={setToast} initialType={printType} device={device} />}
       {id === 'settings' && <SettingsApp member={currentMember} onMemberChange={onMemberChange} preferences={preferences} setPreferences={setPreferences} items={members} setItems={setMembers} tasks={tasks} setTasks={setTasks} notify={setToast} />}
     </Window>)}</section>
-    <nav className="dock"><button className="dock-home" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }}><Command size={20} /></button><span className="dock-separator" />{Object.entries(APP_DEFS).map(([id, app]) => { const Icon = app.icon; return <button key={id} className={`dock-app ${focused === id ? 'focused' : ''}`} onClick={() => openApp(id)} style={{ '--app': app.color }} title={app.title}><Icon size={21} />{activeApps.includes(id) && <i />}</button>; })}</nav>
+    <nav className="dock" aria-label="Hauptnavigation"><button className="dock-home" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }} aria-label="Home-Menü"><Command size={20} /><span className="dock-label">Home</span></button><span className="dock-separator" />{Object.entries(APP_DEFS).map(([id, app]) => { const Icon = app.icon; return <button key={id} className={`dock-app ${focused === id ? 'focused' : ''}`} onClick={() => openApp(id)} style={{ '--app': app.color }} title={app.title} aria-current={focused === id ? 'page' : undefined}><Icon size={21} /><span className="dock-label">{app.title === 'Einstellungen' ? 'Setup' : app.title}</span>{activeApps.includes(id) && <i />}</button>; })}</nav>
     {toast && <div className="toast" role="status" aria-live="polite"><CheckCircle2 size={18} />{toast}</div>}
     {locked && <LockScreen member={currentMember} preferences={preferences} time={time} onUnlock={onLogout} />}
   </main>;
@@ -388,7 +395,7 @@ function SettingsApp({ member, onMemberChange, preferences, setPreferences, item
       {section === 'appearance' && <AppearanceSettings preferences={preferences} updatePreference={updatePreference} />}
       {section === 'notifications' && <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Mitteilungen" description="Lege fest, wie HouseOS dich informiert." /><div className="settings-card"><SettingSwitch icon={Bell} color="#ff3b30" title="Mitteilungen erlauben" subtitle="Hinweise zu Aufgaben und gemeinsamen Listen" checked={preferences.notifications} onChange={value => updatePreference('notifications', value)} /><SettingSwitch icon={Volume2} color="#ff9500" title="Töne" subtitle="Bei wichtigen Hinweisen einen Ton abspielen" checked={preferences.sounds} onChange={value => updatePreference('sounds', value)} /></div></section>}
       {section === 'accessibility' && <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Bedienungshilfen" description="Passe Lesbarkeit und Bewegungen an deine Bedürfnisse an." /><div className="settings-card"><SettingSwitch icon={Eye} color="#007aff" title="Größerer Text" subtitle="Schrift in HouseOS etwas vergrößern" checked={preferences.largeText} onChange={value => updatePreference('largeText', value)} /><SettingSwitch icon={Contrast} color="#5856d6" title="Mehr Kontrast" subtitle="Trennlinien und Flächen deutlicher anzeigen" checked={preferences.highContrast} onChange={value => updatePreference('highContrast', value)} /><SettingSwitch icon={Accessibility} color="#34c759" title="Bewegung reduzieren" subtitle="Animationen und Übergänge minimieren" checked={preferences.reduceMotion} onChange={value => updatePreference('reduceMotion', value)} /></div></section>}
-      {section === 'general' && <section className="preference-panel"><PreferenceHeader kicker="HOUSEOS" title="Allgemein" description="Grundlegende Einstellungen für dieses Gerät." /><div className="settings-card"><div className="settings-row icon-row"><i style={{ '--category': '#007aff' }}><Languages size={15} /></i><span><strong>Sprache</strong><small>Sprache der Oberfläche</small></span><select value={preferences.language} onChange={event => updatePreference('language', event.target.value)}><option>Deutsch</option><option>English</option></select></div><div className="settings-row icon-row"><i style={{ '--category': '#8e8e93' }}><Info size={15} /></i><span><strong>HouseOS</strong><small>Persönliches Zuhause-Dashboard</small></span><b>Version 0.4.0</b></div><div className="settings-row icon-row"><i style={{ '--category': '#5856d6' }}><KeyRound size={15} /></i><span><strong>PIN & Sicherheit</strong><small>Dein Profil wird beim Verlassen gesperrt</small></span><b>Aktiv</b></div></div></section>}
+      {section === 'general' && <section className="preference-panel"><PreferenceHeader kicker="HOUSEOS" title="Allgemein" description="Grundlegende Einstellungen für dieses Gerät." /><div className="settings-card"><div className="settings-row icon-row"><i style={{ '--category': '#007aff' }}><Languages size={15} /></i><span><strong>Sprache</strong><small>Sprache der Oberfläche</small></span><select value={preferences.language} onChange={event => updatePreference('language', event.target.value)}><option>Deutsch</option><option>English</option></select></div><div className="settings-row icon-row"><i style={{ '--category': '#8e8e93' }}><Info size={15} /></i><span><strong>HouseOS</strong><small>Persönliches Zuhause-Dashboard</small></span><b>Version 0.5.0</b></div><div className="settings-row icon-row"><i style={{ '--category': '#5856d6' }}><KeyRound size={15} /></i><span><strong>PIN & Sicherheit</strong><small>Dein Profil wird beim Verlassen gesperrt</small></span><b>Aktiv</b></div></div></section>}
       {section === 'users' && member.isAdmin && <section className="admin-settings-panel"><Members embedded items={items} setItems={setItems} tasks={tasks} setTasks={setTasks} notify={notify} /></section>}
       {['system','updates'].includes(section) && member.isAdmin && <section className="admin-settings-panel"><SystemPanel section={section} notify={notify} /></section>}
     </main>
