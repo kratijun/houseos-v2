@@ -42,7 +42,6 @@ HOUSEOS_GITHUB_REPO=${REPOSITORY}
 EOF
 chmod 640 /etc/houseos.env
 
-sed "s/@HOUSEOS_USER@/${HOUSEOS_USER}/g" /opt/houseos/deploy/houseos.service >/etc/systemd/system/houseos.service
 cp /opt/houseos/deploy/houseos-updater.service /etc/systemd/system/houseos-updater.service
 SYSTEMCTL_PATH="$(command -v systemctl)"
 cat >/etc/sudoers.d/houseos-updater <<EOF
@@ -53,19 +52,11 @@ EOF
 chmod 440 /etc/sudoers.d/houseos-updater
 visudo -cf /etc/sudoers.d/houseos-updater
 
-USER_HOME="$(getent passwd "${HOUSEOS_USER}" | cut -d: -f6)"
-install -d -o "${HOUSEOS_USER}" -g "${HOUSEOS_USER}" "${USER_HOME}/.config/labwc"
-AUTOSTART="${USER_HOME}/.config/labwc/autostart"
-touch "${AUTOSTART}"
-sed -i '/start-kiosk\.sh/d' "${AUTOSTART}"
-echo "/opt/houseos/scripts/start-kiosk.sh &" >>"${AUTOSTART}"
-chown "${HOUSEOS_USER}:${HOUSEOS_USER}" "${AUTOSTART}"
-chmod +x /opt/houseos/scripts/start-kiosk.sh
+bash /opt/houseos/deploy/optimize-kiosk-start.sh "${HOUSEOS_USER}"
 
 if command -v raspi-config >/dev/null; then
   raspi-config nonint do_boot_behaviour B4
 fi
-systemctl daemon-reload
 systemctl enable --now cups.service houseos.service
 
 echo "HouseOS ist eingerichtet. Nach 'sudo reboot' startet der Pi direkt im Kioskmodus."

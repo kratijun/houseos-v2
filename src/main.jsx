@@ -8,12 +8,13 @@ import {
   HardDrive, RefreshCw, MonitorCog,
   UserRound, Palette, Bell, Accessibility, Camera, Moon, Languages, Volume2,
   Info, KeyRound, Eye, Contrast, Smartphone, SlidersHorizontal,
-  Power, PowerOff, Lock, Unlock, AlertTriangle, ExternalLink,
+  Power, PowerOff, Lock, AlertTriangle, ExternalLink, Pause, Play,
 } from 'lucide-react';
 import './styles.css';
 
 const APP_DEFS = {
   today: { title: 'Heute', icon: Sun, color: '#ff9f0a', keywords: 'übersicht wetter standort uhrzeit' },
+  timer: { title: 'Timer', icon: Clock3, color: '#ff9500', keywords: 'küche kochen alarm wecker countdown' },
   tasks: { title: 'Aufgaben', icon: ListTodo, color: '#30b67a', keywords: 'todo erledigen termin zeit wiederholung' },
   shopping: { title: 'Einkauf', icon: ShoppingBasket, color: '#ff6259', keywords: 'liste artikel kategorie' },
   printer: { title: 'Print Center', icon: Printer, color: '#667eea', keywords: 'bon drucken vorschau' },
@@ -139,16 +140,24 @@ function useDatabaseCollection(resource, fallback, enabled) {
 
 function useDeviceContext(enabled) {
   const [context, setContext] = useState({ location: 'Standort wird ermittelt …', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, weather: null, status: 'loading' });
-  const refresh = async () => {
+  const refresh = async (cityOverride) => {
     if (!enabled) return;
     setContext(current => ({ ...current, status: 'loading' }));
-    const useServerLocation = async () => {
+    let city = typeof cityOverride === 'string' ? cityOverride : '';
+    if (cityOverride === undefined) {
       try {
-        const response = await fetch('/api/device-context');
+        const settingsResponse = await fetch('/api/device/settings', { cache: 'no-store' });
+        if (settingsResponse.ok) city = String((await settingsResponse.json()).city || '');
+      } catch {}
+    }
+    const useServerLocation = async (configuredCity = '') => {
+      try {
+        const response = await fetch(`/api/device-context${configuredCity ? `?city=${encodeURIComponent(configuredCity)}` : ''}`, { cache: 'no-store' });
         if (!response.ok) throw new Error();
         setContext({ ...(await response.json()), status: 'ready' });
       } catch { setContext(current => ({ ...current, location: 'Standort nicht verfügbar', status: 'error' })); }
     };
+    if (city) return useServerLocation(city);
     if (!navigator.geolocation) return useServerLocation();
     navigator.geolocation.getCurrentPosition(async position => {
       try {
@@ -178,10 +187,9 @@ function App() {
       setTimeout(() => setBooting(false), Math.max(0, 1850 - (Date.now() - start)));
     });
   }, []);
-  const logout = async () => { await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {}); setMember(null); await refreshUsers(); };
   if (booting) return <BootScreen />;
   if (!member) return <LoginScreen users={users} onAuthenticated={setMember} onUsersChanged={refreshUsers} error={authError} setError={setAuthError} />;
-  return <Desktop currentMember={member} onMemberChange={setMember} onLogout={logout} />;
+  return <Desktop currentMember={member} onMemberChange={setMember} />;
 }
 
 function BootScreen() {
@@ -242,7 +250,35 @@ function LoginScreen({ users, onAuthenticated, onUsersChanged, error, setError }
   </main>;
 }
 
-function Desktop({ currentMember, onMemberChange, onLogout }) {
+let timerAudioContext;
+const prepareTimerAudio = () => {
+  try {
+    timerAudioContext ??= new (window.AudioContext || window.webkitAudioContext)();
+    timerAudioContext.resume?.().catch?.(() => {});
+  } catch {}
+  return timerAudioContext;
+};
+const playTimerBell = () => {
+  const context = prepareTimerAudio(); if (!context) return;
+  const start = context.currentTime;
+  [[0,880],[.16,1175],[.34,880]].forEach(([offset, frequency]) => {
+    const oscillator = context.createOscillator(); const gain = context.createGain();
+    oscillator.type = 'sine'; oscillator.frequency.setValueAtTime(frequency, start + offset);
+    gain.gain.setValueAtTime(.0001, start + offset); gain.gain.exponentialRampToValueAtTime(.28, start + offset + .018); gain.gain.exponentialRampToValueAtTime(.0001, start + offset + .22);
+    oscillator.connect(gain); gain.connect(context.destination); oscillator.start(start + offset); oscillator.stop(start + offset + .24);
+  });
+};
+const loadKitchenTimers = () => {
+  try { const value = JSON.parse(localStorage.getItem('houseos.kitchenTimers')); return Array.isArray(value) ? value : []; }
+  catch { return []; }
+};
+const formatTimer = milliseconds => {
+  const total = Math.max(0, Math.ceil(milliseconds / 1000));
+  const hours = Math.floor(total / 3600); const minutes = Math.floor(total % 3600 / 60); const seconds = total % 60;
+  return hours ? `${hours}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}` : `${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+};
+
+function Desktop({ currentMember, onMemberChange }) {
   const [time, setTime] = useState(new Date());
   const [activeApps, setActiveApps] = useState(['today']);
   const [minimizedApps, setMinimizedApps] = useState([]);
@@ -253,6 +289,9 @@ function Desktop({ currentMember, onMemberChange, onLogout }) {
   const [preferences, setPreferences] = useState(() => loadPreferences(currentMember.id));
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false);
   const [locked, setLocked] = useState(false);
+  const [restartNotice, setRestartNotice] = useState(null);
+  const [timers, setTimers] = useState(loadKitchenTimers);
+  const [timerNow, setTimerNow] = useState(Date.now());
   const [tasks, setTasks, tasksOnline] = useDatabaseCollection('tasks', defaultTasks, true);
   const [shopping, setShopping, shoppingOnline] = useDatabaseCollection('shopping', defaultShopping, true);
   const [members, setMembers, membersOnline] = useDatabaseCollection('members', defaultMembers, true);
@@ -260,8 +299,31 @@ function Desktop({ currentMember, onMemberChange, onLogout }) {
   const databaseOnline = tasksOnline && shoppingOnline && membersOnline;
   useEffect(() => { const tick = setInterval(() => setTime(new Date()), 1000); return () => clearInterval(tick); }, []);
   useEffect(() => { localStorage.setItem(`houseos.preferences.${currentMember.id}`, JSON.stringify(preferences)); }, [currentMember.id, preferences]);
+  useEffect(() => { localStorage.setItem('houseos.kitchenTimers', JSON.stringify(timers)); }, [timers]);
+  useEffect(() => {
+    const tick = () => {
+      const now = Date.now(); setTimerNow(now);
+      setTimers(current => { let changed = false; const next = current.map(timer => { if (timer.status === 'running' && timer.endAt <= now) { changed = true; return { ...timer, status: 'ringing', remaining: 0 }; } return timer; }); return changed ? next : current; });
+    };
+    const interval = setInterval(tick, 500); tick(); return () => clearInterval(interval);
+  }, []);
+  const ringingTimers = timers.filter(timer => timer.status === 'ringing');
+  useEffect(() => {
+    if (!ringingTimers.length || !preferences.sounds) return;
+    playTimerBell(); const bell = setInterval(playTimerBell, 2600); return () => clearInterval(bell);
+  }, [ringingTimers.length, preferences.sounds]);
+  useEffect(() => {
+    if (!timers.some(timer => timer.status === 'running') || !navigator.wakeLock?.request) return;
+    let wakeLock; navigator.wakeLock.request('screen').then(lock => { wakeLock = lock; }).catch(() => {});
+    return () => wakeLock?.release?.().catch(() => {});
+  }, [timers.some(timer => timer.status === 'running')]);
   useEffect(() => { const query = window.matchMedia?.('(prefers-color-scheme: dark)'); if (!query) return; const update = event => setSystemDark(event.matches); query.addEventListener?.('change', update); return () => query.removeEventListener?.('change', update); }, []);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 2600); return () => clearTimeout(timer); }, [toast]);
+  useEffect(() => {
+    const showRestart = event => setRestartNotice(current => current || { title: event.detail?.title || 'Raspberry Pi startet neu', message: event.detail?.message || 'Der Raspberry Pi wird neu gestartet.', targetVersion: event.detail?.version || '' });
+    window.addEventListener('houseos:restart', showRestart);
+    return () => window.removeEventListener('houseos:restart', showRestart);
+  }, []);
   useEffect(() => {
     let timer;
     const armLock = () => { clearTimeout(timer); if (!locked) timer = setTimeout(() => setLocked(true), 90_000); };
@@ -273,6 +335,10 @@ function Desktop({ currentMember, onMemberChange, onLogout }) {
   const focusApp = (id) => { setActiveApps(apps => [...apps.filter(app => app !== id), id]); setFocused(id); };
   const closeApp = (id) => { setActiveApps(apps => { const remaining = apps.filter(app => app !== id); setFocused(current => current === id ? (remaining.filter(app => !minimizedApps.includes(app)).at(-1) ?? null) : current); return remaining; }); setMinimizedApps(apps => apps.filter(app => app !== id)); };
   const minimizeApp = (id) => { setMinimizedApps(apps => apps.includes(id) ? apps : [...apps, id]); setFocused(current => current === id ? (activeApps.filter(app => app !== id && !minimizedApps.includes(app)).at(-1) ?? null) : current); };
+  const addTimer = (seconds, label) => { prepareTimerAudio(); const duration = Math.max(1, Math.round(seconds)) * 1000; setTimers(current => [...current, { id: `${Date.now()}-${Math.random()}`, label: label.trim() || 'Küchentimer', duration, remaining: duration, endAt: Date.now() + duration, status: 'running' }]); };
+  const pauseTimer = id => setTimers(current => current.map(timer => timer.id === id && timer.status === 'running' ? { ...timer, status: 'paused', remaining: Math.max(0, timer.endAt - Date.now()) } : timer));
+  const resumeTimer = id => { prepareTimerAudio(); setTimers(current => current.map(timer => timer.id === id && timer.status === 'paused' ? { ...timer, status: 'running', endAt: Date.now() + timer.remaining } : timer)); };
+  const removeTimer = id => setTimers(current => current.filter(timer => timer.id !== id));
   const temp = device.weather?.temperature;
   const resolvedAppearance = preferences.appearance === 'auto' ? (systemDark ? 'dark' : 'light') : preferences.appearance;
   return <main className={`desktop theme-${resolvedAppearance} wallpaper-${preferences.wallpaper} ${preferences.largeText ? 'large-text' : ''} ${preferences.highContrast ? 'high-contrast' : ''} ${preferences.reduceMotion ? 'reduce-motion' : ''}`} style={{ '--blue': preferences.accent }} onClick={() => launcherOpen && setLauncherOpen(false)}>
@@ -287,25 +353,81 @@ function Desktop({ currentMember, onMemberChange, onLogout }) {
     {launcherOpen && <Launcher onOpen={openApp} onClose={() => setLauncherOpen(false)} currentMember={currentMember} />}
     <section className="window-layer">{Object.keys(APP_DEFS).filter(id => activeApps.includes(id)).map(id => <Window key={id} id={id} app={APP_DEFS[id]} onClose={() => closeApp(id)} onMinimize={() => minimizeApp(id)} onFocus={() => focusApp(id)} focused={focused === id} minimized={minimizedApps.includes(id)} z={20 + activeApps.indexOf(id)}>
       {id === 'today' && <Today tasks={tasks} shopping={shopping} onOpen={openApp} onPrint={() => openPrint('daily')} time={time} device={device} member={currentMember} />}
+      {id === 'timer' && <KitchenTimers timers={timers} now={timerNow} onAdd={addTimer} onPause={pauseTimer} onResume={resumeTimer} onRemove={removeTimer} />}
       {id === 'tasks' && <Tasks items={tasks} setItems={setTasks} members={members} currentMember={currentMember} />}
       {id === 'shopping' && <Shopping items={shopping} setItems={setShopping} onPrint={() => openPrint('shopping')} />}
       {id === 'printer' && <PrintCenter tasks={tasks} shopping={shopping} notify={setToast} initialType={printType} device={device} />}
-      {id === 'settings' && <SettingsApp member={currentMember} onMemberChange={onMemberChange} preferences={preferences} setPreferences={setPreferences} items={members} setItems={setMembers} tasks={tasks} setTasks={setTasks} notify={setToast} />}
+      {id === 'settings' && <SettingsApp member={currentMember} onMemberChange={onMemberChange} preferences={preferences} setPreferences={setPreferences} items={members} setItems={setMembers} tasks={tasks} setTasks={setTasks} notify={setToast} device={device} refreshDevice={refreshDevice} />}
     </Window>)}</section>
     <nav className="dock" aria-label="Hauptnavigation"><button className="dock-home" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }} aria-label="Home-Menü"><Command size={20} /><span className="dock-label">Home</span></button><span className="dock-separator" />{Object.entries(APP_DEFS).map(([id, app]) => { const Icon = app.icon; return <button key={id} className={`dock-app ${focused === id ? 'focused' : ''}`} onClick={() => openApp(id)} style={{ '--app': app.color }} title={app.title} aria-current={focused === id ? 'page' : undefined}><Icon size={21} /><span className="dock-label">{app.title === 'Einstellungen' ? 'Setup' : app.title}</span>{activeApps.includes(id) && <i />}</button>; })}</nav>
     {toast && <div className="toast" role="status" aria-live="polite"><CheckCircle2 size={18} />{toast}</div>}
-    {locked && <LockScreen member={currentMember} preferences={preferences} time={time} onUnlock={onLogout} />}
+    {locked && <LockScreen time={time} onUnlock={() => setLocked(false)} />}
+    {!!ringingTimers.length && <TimerAlarm timers={ringingTimers} onStop={removeTimer} />}
+    {restartNotice && <RestartScreen title={restartNotice.title} message={restartNotice.message} targetVersion={restartNotice.targetVersion} />}
   </main>;
 }
 
-function LockScreen({ member, preferences, time, onUnlock }) {
-  return <section className="lock-screen" onDoubleClick={onUnlock}>
+function LockScreen({ time, onUnlock }) {
+  const dragStart = useRef(null);
+  const dragYRef = useRef(0);
+  const [dragY, setDragY] = useState(0);
+  const startSwipe = event => {
+    dragStart.current = event.clientY;
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const moveSwipe = event => {
+    if (dragStart.current === null) return;
+    dragYRef.current = Math.min(0, event.clientY - dragStart.current);
+    setDragY(dragYRef.current);
+  };
+  const finishSwipe = () => {
+    const shouldUnlock = dragYRef.current < -80;
+    dragStart.current = null;
+    if (shouldUnlock) onUnlock();
+    else {
+      dragYRef.current = 0;
+      setDragY(0);
+    }
+  };
+  const cancelSwipe = () => {
+    dragStart.current = null;
+    dragYRef.current = 0;
+    setDragY(0);
+  };
+  return <section
+    className={`lock-screen ${dragStart.current !== null ? 'swiping' : ''}`}
+    style={{ '--swipe-y': `${dragY}px`, '--swipe-opacity': 1 - Math.min(1, Math.abs(dragY) / 180) * .32 }}
+    onPointerDown={startSwipe}
+    onPointerMove={moveSwipe}
+    onPointerUp={finishSwipe}
+    onPointerCancel={cancelSwipe}
+    onKeyDown={event => { if (event.key === 'ArrowUp' || event.key === 'Enter') onUnlock(); }}
+    tabIndex={0}
+    autoFocus
+    aria-label="Zum Entsperren nach oben ziehen"
+  >
     <div className="lock-orb lock-orb-one" /><div className="lock-orb lock-orb-two" />
     <header><Lock size={15} /><span>HouseOS ist gesperrt</span></header>
     <div className="lock-clock"><span>{time.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</span><strong>{time.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })}</strong></div>
-    <div className="lock-owner"><ProfileAvatar member={member} preferences={preferences} className="lock-avatar profile-image" /><span><small>ANGEMELDET ALS</small><strong>{member.name}</strong></span></div>
-    <button onClick={onUnlock}><Unlock size={16} /> Mit PIN entsperren</button><p>Doppelklicken oder Schaltfläche wählen, um fortzufahren</p>
+    <div className="lock-swipe-handle" aria-hidden="true"><i /><span>⌃</span></div>
   </section>;
+}
+
+function KitchenTimers({ timers, now, onAdd, onPause, onResume, onRemove }) {
+  const [label, setLabel] = useState(''); const [minutes, setMinutes] = useState(5); const [seconds, setSeconds] = useState(0);
+  const submit = event => { event.preventDefault(); const duration = Number(minutes || 0) * 60 + Number(seconds || 0); if (duration < 1) return; onAdd(duration, label); setLabel(''); };
+  const presets = [1,3,5,10,15,30];
+  return <div className="app-page timer-page"><div className="app-heading"><div><span className="eyebrow">KÜCHENHELFER</span><h2>Timer</h2><p>Mehrere Zeiten gleichzeitig im Blick behalten.</p></div><span className={`timer-count ${timers.length ? 'active' : ''}`}><Clock3 size={18} />{timers.length} aktiv</span></div>
+    <section className="timer-create-card"><div className="timer-presets">{presets.map(value => <button key={value} onClick={() => onAdd(value * 60, label || `${value}-Minuten-Timer`)}><strong>{value}</strong><small>Min.</small></button>)}</div>
+      <form className="timer-custom" onSubmit={submit}><input className="timer-label-input" value={label} onChange={event => setLabel(event.target.value)} placeholder="Wofür? z. B. Nudeln" /><label><span>Minuten</span><input type="number" inputMode="numeric" min="0" max="999" value={minutes} onChange={event => setMinutes(event.target.value)} /></label><label><span>Sekunden</span><input type="number" inputMode="numeric" min="0" max="59" value={seconds} onChange={event => setSeconds(event.target.value)} /></label><button className="primary"><Plus size={17} /> Timer starten</button></form>
+    </section>
+    <section className="timer-list">{timers.map(timer => { const remaining = timer.status === 'paused' ? timer.remaining : timer.status === 'ringing' ? 0 : Math.max(0, timer.endAt - now); const progress = timer.duration ? Math.max(0, Math.min(100, remaining / timer.duration * 100)) : 0; return <article className={`timer-card ${timer.status}`} key={timer.id}><div className="timer-card-icon">{timer.status === 'ringing' ? <Bell size={23} /> : <Clock3 size={23} />}</div><div className="timer-card-main"><span><strong>{timer.label}</strong><small>{timer.status === 'paused' ? 'Pausiert' : timer.status === 'ringing' ? 'Abgelaufen' : `Fertig um ${new Date(timer.endAt).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`}</small></span><b>{formatTimer(remaining)}</b><div className="timer-progress"><i style={{ width: `${progress}%` }} /></div></div><div className="timer-card-actions">{timer.status === 'running' && <button onClick={() => onPause(timer.id)} aria-label={`${timer.label} pausieren`}><Pause size={18} /></button>}{timer.status === 'paused' && <button onClick={() => onResume(timer.id)} aria-label={`${timer.label} fortsetzen`}><Play size={18} /></button>}<button className="timer-remove" onClick={() => onRemove(timer.id)} aria-label={`${timer.label} löschen`}><X size={18} /></button></div></article>; })}{!timers.length && <div className="timer-empty"><Clock3 size={35} /><strong>Noch kein Timer aktiv</strong><p>Wähle oben eine Schnellzeit oder stelle eine eigene Zeit ein.</p></div>}</section>
+  </div>;
+}
+
+function TimerAlarm({ timers, onStop }) {
+  const stopAll = () => timers.forEach(timer => onStop(timer.id));
+  return <section className="timer-alarm" role="alertdialog" aria-modal="true" aria-live="assertive"><div className="timer-alarm-bell"><Bell size={38} /></div><span>TIMER ABGELAUFEN</span><h2>{timers[0].label}</h2>{timers.length > 1 && <p>und {timers.length - 1} weitere Timer</p>}<button onClick={stopAll}><Check size={22} /> Bimmel stoppen</button></section>;
 }
 
 function DesktopIcon({ app, onClick }) { const Icon = app.icon; return <button className="desktop-icon" onClick={onClick}><span style={{ '--app': app.color }}><Icon size={25} /></span><small>{app.title}</small></button>; }
@@ -369,7 +491,7 @@ function Shopping({ items, setItems, onPrint }) {
     <div className="full-list">{items.map(item => <div className={item.checked ? 'done' : ''} key={item.id}><button className="check" onClick={() => setItems(items.map(candidate => candidate.id === item.id ? { ...candidate, checked: !candidate.checked } : candidate))}>{item.checked && <Check size={14} />}</button><span><strong>{item.text}</strong><small>{item.category}</small></span><button className="delete" onClick={() => setItems(items.filter(candidate => candidate.id !== item.id))}><Trash2 size={16} /></button></div>)}</div></div>;
 }
 
-function SettingsApp({ member, onMemberChange, preferences, setPreferences, items, setItems, tasks, setTasks, notify }) {
+function SettingsApp({ member, onMemberChange, preferences, setPreferences, items, setItems, tasks, setTasks, notify, device, refreshDevice }) {
   const [section, setSection] = useState('profile'); const [profileName, setProfileName] = useState(member.name); const [saving, setSaving] = useState(false); const [error, setError] = useState(''); const fileInput = useRef(null);
   const groups = [
     { label: 'PERSÖNLICH', items: [['profile','Profil',UserRound,'#8e8e93'],['appearance','Darstellung',Palette,'#007aff'],['notifications','Mitteilungen',Bell,'#ff3b30'],['accessibility','Bedienungshilfen',Accessibility,'#007aff']] },
@@ -395,11 +517,52 @@ function SettingsApp({ member, onMemberChange, preferences, setPreferences, item
       {section === 'appearance' && <AppearanceSettings preferences={preferences} updatePreference={updatePreference} />}
       {section === 'notifications' && <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Mitteilungen" description="Lege fest, wie HouseOS dich informiert." /><div className="settings-card"><SettingSwitch icon={Bell} color="#ff3b30" title="Mitteilungen erlauben" subtitle="Hinweise zu Aufgaben und gemeinsamen Listen" checked={preferences.notifications} onChange={value => updatePreference('notifications', value)} /><SettingSwitch icon={Volume2} color="#ff9500" title="Töne" subtitle="Bei wichtigen Hinweisen einen Ton abspielen" checked={preferences.sounds} onChange={value => updatePreference('sounds', value)} /></div></section>}
       {section === 'accessibility' && <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Bedienungshilfen" description="Passe Lesbarkeit und Bewegungen an deine Bedürfnisse an." /><div className="settings-card"><SettingSwitch icon={Eye} color="#007aff" title="Größerer Text" subtitle="Schrift in HouseOS etwas vergrößern" checked={preferences.largeText} onChange={value => updatePreference('largeText', value)} /><SettingSwitch icon={Contrast} color="#5856d6" title="Mehr Kontrast" subtitle="Trennlinien und Flächen deutlicher anzeigen" checked={preferences.highContrast} onChange={value => updatePreference('highContrast', value)} /><SettingSwitch icon={Accessibility} color="#34c759" title="Bewegung reduzieren" subtitle="Animationen und Übergänge minimieren" checked={preferences.reduceMotion} onChange={value => updatePreference('reduceMotion', value)} /></div></section>}
-      {section === 'general' && <section className="preference-panel"><PreferenceHeader kicker="HOUSEOS" title="Allgemein" description="Grundlegende Einstellungen für dieses Gerät." /><div className="settings-card"><div className="settings-row icon-row"><i style={{ '--category': '#007aff' }}><Languages size={15} /></i><span><strong>Sprache</strong><small>Sprache der Oberfläche</small></span><select value={preferences.language} onChange={event => updatePreference('language', event.target.value)}><option>Deutsch</option><option>English</option></select></div><div className="settings-row icon-row"><i style={{ '--category': '#8e8e93' }}><Info size={15} /></i><span><strong>HouseOS</strong><small>Persönliches Zuhause-Dashboard</small></span><b>Version 0.5.0</b></div><div className="settings-row icon-row"><i style={{ '--category': '#5856d6' }}><KeyRound size={15} /></i><span><strong>PIN & Sicherheit</strong><small>Dein Profil wird beim Verlassen gesperrt</small></span><b>Aktiv</b></div></div></section>}
+      {section === 'general' && <GeneralSettings preferences={preferences} updatePreference={updatePreference} member={member} notify={notify} device={device} refreshDevice={refreshDevice} />}
       {section === 'users' && member.isAdmin && <section className="admin-settings-panel"><Members embedded items={items} setItems={setItems} tasks={tasks} setTasks={setTasks} notify={notify} /></section>}
       {['system','updates'].includes(section) && member.isAdmin && <section className="admin-settings-panel"><SystemPanel section={section} notify={notify} /></section>}
     </main>
   </div>;
+}
+
+function RestartScreen({ title, message, targetVersion }) {
+  const startedAt = useRef(Date.now()); const wasOffline = useRef(false);
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const response = await fetch(`/api/health?restart=${Date.now()}`, { cache: 'no-store' });
+        const health = response.ok ? await response.json() : null;
+        const updatedServiceReady = targetVersion && String(health?.version) === String(targetVersion);
+        if (response.ok && (updatedServiceReady || wasOffline.current || Date.now() - startedAt.current > 20_000)) window.location.reload();
+      } catch { wasOffline.current = true; }
+    };
+    const timer = setInterval(check, 1400); check();
+    return () => clearInterval(timer);
+  }, [targetVersion]);
+  return <section className="restart-screen" role="status" aria-live="assertive"><div className="restart-spinner"><RefreshCw size={34} /></div><h2>{title}</h2><p>{message}</p><small>HouseOS verbindet sich automatisch wieder. Bitte das Gerät eingeschaltet lassen.</small></section>;
+}
+
+function GeneralSettings({ preferences, updatePreference, member, notify, device, refreshDevice }) {
+  const [city, setCity] = useState(''); const [savingCity, setSavingCity] = useState(false); const [cityError, setCityError] = useState('');
+  useEffect(() => {
+    fetch('/api/device/settings', { cache: 'no-store' }).then(async response => {
+      const result = await response.json(); if (!response.ok) throw new Error(result.error); setCity(result.city || '');
+    }).catch(error => setCityError(error.message || 'Wetterstadt konnte nicht geladen werden.'));
+  }, []);
+  const saveCity = async event => {
+    event.preventDefault(); setSavingCity(true); setCityError('');
+    try {
+      const response = await fetch('/api/device/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ city: city.trim() }) });
+      const result = await response.json(); if (!response.ok) throw new Error(result.error);
+      setCity(result.city); await refreshDevice(result.city); notify(result.city ? `Wetterstadt auf ${result.location || result.city} gesetzt` : 'Automatische Standorterkennung aktiviert');
+    } catch (error) { setCityError(error.message || 'Wetterstadt konnte nicht gespeichert werden.'); }
+    finally { setSavingCity(false); }
+  };
+  return <section className="preference-panel"><PreferenceHeader kicker="HOUSEOS" title="Allgemein" description="Grundlegende Einstellungen für dieses Gerät." />
+    <h3 className="settings-section-title">Standort und Wetter</h3>
+    <form className="settings-card city-settings" onSubmit={saveCity}><div className="settings-row icon-row"><i style={{ '--category': '#34c759' }}><MapPin size={15} /></i><span><strong>Wetterstadt</strong><small>{city ? `Wetter für ${device.location}` : 'Leer lassen für automatische Standorterkennung'}</small></span><input value={city} onChange={event => setCity(event.target.value)} placeholder="z. B. Wien" autoComplete="off" disabled={!member.isAdmin || savingCity} /><button className="settings-save" disabled={!member.isAdmin || savingCity}>{savingCity ? 'Prüfe …' : 'Speichern'}</button></div>{!member.isAdmin && <p className="device-hint">Nur der Haushaltsadmin kann die Wetterstadt ändern.</p>}{cityError && <p className="settings-error">{cityError}</p>}</form>
+    <h3 className="settings-section-title">HouseOS</h3>
+    <div className="settings-card"><div className="settings-row icon-row"><i style={{ '--category': '#007aff' }}><Languages size={15} /></i><span><strong>Sprache</strong><small>Sprache der Oberfläche</small></span><select value={preferences.language} onChange={event => updatePreference('language', event.target.value)}><option>Deutsch</option><option>English</option></select></div><div className="settings-row icon-row"><i style={{ '--category': '#8e8e93' }}><Info size={15} /></i><span><strong>HouseOS</strong><small>Persönliches Zuhause-Dashboard</small></span><b>Version 0.5.0</b></div><div className="settings-row icon-row"><i style={{ '--category': '#5856d6' }}><KeyRound size={15} /></i><span><strong>PIN & Sicherheit</strong><small>Dein Profil wird beim Verlassen gesperrt</small></span><b>Aktiv</b></div></div>
+  </section>;
 }
 
 function PreferenceHeader({ kicker, title, description }) { return <header><span className="settings-kicker">{kicker}</span><h2>{title}</h2><p>{description}</p></header>; }
@@ -417,7 +580,7 @@ function SystemPanel({ section, notify }) {
   const [info, setInfo] = useState(null); const [update, setUpdate] = useState(null); const [updateStatus, setUpdateStatus] = useState(null); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
   const loadInfo = async () => { try { const response = await fetch('/api/system/info'); const result = await response.json(); if (!response.ok) throw new Error(result.error); setInfo(result); } catch (loadError) { setError(loadError.message || 'Systeminformationen konnten nicht geladen werden.'); } };
   const checkUpdate = async (force = false) => { setBusy(true); setError(''); try { const response = await fetch(`/api/updates/check${force ? '?force=1' : ''}`); const result = await response.json(); if (!response.ok) throw new Error(result.error); setUpdate(result); } catch (checkError) { setError(checkError.message || 'Updateprüfung fehlgeschlagen.'); } finally { setBusy(false); } };
-  const loadUpdateStatus = async () => { try { const response = await fetch('/api/updates/status', { cache: 'no-store' }); if (!response.ok) throw new Error(); const result = await response.json(); setUpdateStatus(result); if (result.status === 'installed') { setUpdate(current => ({ ...current, installing: false, message: result.message, currentVersion: result.version, hasUpdate: false })); } } catch { setUpdateStatus(current => UPDATE_ACTIVE_STATES.includes(current?.status) ? { ...current, status: 'restarting', message: 'HouseOS startet neu. Verbindung wird wiederhergestellt …', progress: 96 } : current); } };
+  const loadUpdateStatus = async () => { try { const response = await fetch('/api/updates/status', { cache: 'no-store' }); if (!response.ok) throw new Error(); const result = await response.json(); setUpdateStatus(result); if (result.status === 'restarting') window.dispatchEvent(new CustomEvent('houseos:restart', { detail: { title: 'HouseOS wird neu gestartet', message: result.message, version: result.version } })); if (result.status === 'installed') { setUpdate(current => ({ ...current, installing: false, message: result.message, currentVersion: result.version, hasUpdate: false })); } } catch { if (['dependencies','restarting'].includes(updateStatus?.status)) { const restarting = { ...updateStatus, status: 'restarting', message: 'Das Update ist installiert. Der HouseOS-Dienst startet neu …', progress: 100 }; setUpdateStatus(restarting); window.dispatchEvent(new CustomEvent('houseos:restart', { detail: { title: 'HouseOS wird neu gestartet', message: restarting.message, version: restarting.version } })); } } };
   useEffect(() => { loadInfo(); checkUpdate(false); loadUpdateStatus(); }, []);
   useEffect(() => { if (!UPDATE_ACTIVE_STATES.includes(updateStatus?.status)) return; const timer = setInterval(loadUpdateStatus, 1400); return () => clearInterval(timer); }, [updateStatus?.status]);
   const install = async () => { setBusy(true); setError(''); try { const response = await fetch('/api/updates/install', { method: 'POST' }); const result = await response.json(); if (!response.ok) throw new Error(result.error); notify(result.message); setUpdateStatus({ status: result.status || 'queued', version: result.version, progress: 5, message: result.message }); setUpdate(current => ({ ...current, message: result.message, installing: true })); } catch (installError) { setError(installError.message || 'Update konnte nicht gestartet werden.'); } finally { setBusy(false); } };
@@ -446,7 +609,7 @@ const DEVICE_ACTIONS = {
 
 function DeviceControls({ supported, notify }) {
   const [pending, setPending] = useState(null); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const action = pending && DEVICE_ACTIONS[pending]; const ActionIcon = action?.icon;
-  const execute = async () => { setBusy(true); setError(''); try { const response = await fetch('/api/system/action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: pending }) }); const result = await response.json(); if (!response.ok) throw new Error(result.error); notify(result.message); setPending(null); } catch (actionError) { setError(actionError.message || 'Aktion konnte nicht ausgeführt werden.'); } finally { setBusy(false); } };
+  const execute = async () => { setBusy(true); setError(''); try { const selectedAction = pending; const response = await fetch('/api/system/action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: selectedAction }) }); const result = await response.json(); if (!response.ok) throw new Error(result.error); notify(result.message); setPending(null); if (selectedAction === 'reboot') window.dispatchEvent(new CustomEvent('houseos:restart', { detail: { message: result.message } })); } catch (actionError) { setError(actionError.message || 'Aktion konnte nicht ausgeführt werden.'); } finally { setBusy(false); } };
   return <section className="device-controls"><div className="section-heading compact"><div><h3>Gerätesteuerung</h3><p>Direkte Aktionen für den Raspberry Pi.</p></div></div><div className="device-action-grid"><button onClick={() => setPending('reboot')} disabled={!supported}><i className="blue"><Power size={18} /></i><span><strong>Neu starten</strong><small>HouseOS sauber neu laden</small></span><ChevronRight size={15} /></button><button onClick={() => setPending('shutdown')} disabled={!supported}><i className="red"><PowerOff size={18} /></i><span><strong>Herunterfahren</strong><small>Raspberry Pi ausschalten</small></span><ChevronRight size={15} /></button><button onClick={() => setPending('exitKiosk')} disabled={!supported}><i className="orange"><ExternalLink size={18} /></i><span><strong>Kiosk verlassen</strong><small>Desktop für Admin-Tests öffnen</small></span><ChevronRight size={15} /></button></div>{!supported && <p className="device-hint">Diese Aktionen sind nur direkt auf dem Raspberry Pi verfügbar.</p>}{error && <p className="settings-error">{error}</p>}
     {action && <div className="confirm-backdrop" role="presentation" onPointerDown={event => event.target === event.currentTarget && !busy && setPending(null)}><div className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title"><i className={action.tone}><ActionIcon size={24} /></i><h3 id="confirm-title">{action.title}</h3><p>{action.description}</p><div><button disabled={busy} onClick={() => setPending(null)}>Abbrechen</button><button disabled={busy} className={`confirm-${action.tone}`} onClick={execute}>{busy ? 'Wird ausgeführt …' : action.confirm}</button></div></div></div>}
   </section>;
@@ -476,6 +639,72 @@ function PrintCenter({ tasks, shopping, notify, initialType, device }) {
     <section className="receipt-wrap"><span className="preview-label">VORSCHAU · {settings.paperWidth} MM</span><div className={`receipt paper-${settings.paperWidth}`} id="receipt"><div className="receipt-logo">⌂ HOUSEOS</div><p>{type === 'daily' ? 'TAGESÜBERSICHT' : type === 'shopping' ? 'EINKAUFSLISTE' : 'AUFGABENLISTE'}</p><div className="receipt-rule" /><small>{date}</small>{type === 'daily' && <><h4>STANDORT</h4><p>{context.location}</p><h4>WETTER</h4><p>{context.weatherText}</p><h4>AUFGABEN</h4>{tasks.filter(task => !task.done).map(task => <p key={task.id}>[ ] {task.text}<small> · {taskSchedule(task)}</small></p>)}<h4>EINKAUF</h4>{shopping.filter(item => !item.checked).map(item => <p key={item.id}>[ ] {item.text}</p>)}</>}{type === 'shopping' && shopping.filter(item => !item.checked).map(item => <p key={item.id}>[ ] {item.text} <small>({item.category})</small></p>)}{type === 'tasks' && tasks.filter(task => !task.done).map(task => <p key={task.id}>[ ] {task.text}<small> · {task.person} · {taskSchedule(task)}</small></p>)}<div className="receipt-rule" /><p className="receipt-center">Zuhause läuft alles.<br />houseos.local</p></div></section></div></div>;
 }
 
+const KEYBOARD_ROWS = [
+  ['1','2','3','4','5','6','7','8','9','0','ß'],
+  ['q','w','e','r','t','z','u','i','o','p','ü'],
+  ['a','s','d','f','g','h','j','k','l','ö','ä'],
+  ['shift','y','x','c','v','b','n','m','backspace'],
+  ['close',',','space','.','enter'],
+];
+const NUMERIC_KEYBOARD_ROWS = [['1','2','3'],['4','5','6'],['7','8','9'],['-','0','backspace'],['close',',','.','enter']];
+
+function OnScreenKeyboard() {
+  const [target, setTarget] = useState(null); const [shift, setShift] = useState(false);
+  useEffect(() => {
+    const editable = element => element instanceof HTMLTextAreaElement || (element instanceof HTMLInputElement && !['button','checkbox','color','date','datetime-local','file','hidden','month','radio','range','reset','submit','time','week'].includes(element.type) && !element.readOnly && !element.disabled && !element.dataset.noVirtualKeyboard);
+    const openFor = element => {
+      if (!editable(element)) return;
+      setTarget(element); setShift(false);
+      setTimeout(() => element?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }), 80);
+    };
+    const focusIn = event => openFor(event.target);
+    const pointerDown = event => {
+      if (!editable(event.target)) return;
+      openFor(event.target);
+    };
+    const focusOut = event => { if (!event.relatedTarget?.closest?.('.screen-keyboard')) setTimeout(() => { if (!editable(document.activeElement)) setTarget(null); }, 0); };
+    document.addEventListener('pointerdown', pointerDown, true); document.addEventListener('focusin', focusIn); document.addEventListener('focusout', focusOut);
+    return () => { document.removeEventListener('pointerdown', pointerDown, true); document.removeEventListener('focusin', focusIn); document.removeEventListener('focusout', focusOut); };
+  }, []);
+  if (!target?.isConnected) return null;
+  const isNumeric = ['number','tel'].includes(target.type) || target.inputMode === 'numeric' || target.inputMode === 'decimal';
+  const updateValue = (value, cursor) => {
+    const prototype = target instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(target, value);
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    target.focus({ preventScroll: true });
+    try { target.setSelectionRange(cursor, cursor); } catch {}
+  };
+  const applyKey = key => {
+    if (key === 'close') { setTarget(null); target.blur(); return; }
+    if (key === 'shift') { setShift(value => !value); return; }
+    if (key === 'enter') {
+      if (target instanceof HTMLTextAreaElement) key = '\n';
+      else {
+        const continueDefault = target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+        target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+        if (continueDefault) target.form?.requestSubmit();
+        setTarget(null); target.blur(); return;
+      }
+    }
+    const value = String(target.value || ''); let start = value.length; let end = value.length;
+    try { start = target.selectionStart ?? value.length; end = target.selectionEnd ?? start; } catch {}
+    if (key === 'backspace') {
+      if (start === end && start > 0) start -= 1;
+      updateValue(`${value.slice(0, start)}${value.slice(end)}`, start); return;
+    }
+    const text = key === 'space' ? ' ' : shift ? key.toLocaleUpperCase('de-DE') : key;
+    if (target.maxLength > -1 && value.length - (end - start) + text.length > target.maxLength) return;
+    updateValue(`${value.slice(0, start)}${text}${value.slice(end)}`, start + text.length);
+    if (shift) setShift(false);
+  };
+  const label = key => key === 'shift' ? (shift ? '⇧' : '⇧') : key === 'backspace' ? '⌫' : key === 'space' ? 'Leertaste' : key === 'enter' ? 'Enter' : key === 'close' ? 'Schließen' : shift ? key.toLocaleUpperCase('de-DE') : key;
+  return <section className={`screen-keyboard ${isNumeric ? 'numeric' : ''}`} aria-label="Bildschirmtastatur" onPointerDown={event => event.preventDefault()}>
+    <div className="screen-keyboard-grip" />
+    {(isNumeric ? NUMERIC_KEYBOARD_ROWS : KEYBOARD_ROWS).map((row, rowIndex) => <div className="keyboard-row" key={rowIndex}>{row.map(key => <button type="button" key={key} className={`key-${key} ${key === 'shift' && shift ? 'active' : ''}`} onPointerDown={event => { event.preventDefault(); applyKey(key); }}>{label(key)}</button>)}</div>)}
+  </section>;
+}
+
 const root = import.meta.hot?.data.root ?? createRoot(document.getElementById('root'));
 if (import.meta.hot) import.meta.hot.data.root = root;
-root.render(<App />);
+root.render(<><App /><OnScreenKeyboard /></>);

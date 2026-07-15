@@ -6,7 +6,7 @@ HOUSEOS_DATA_DIR="${HOUSEOS_DATA_DIR:-/var/lib/houseos}"
 EXIT_KIOSK_FILE="${HOUSEOS_DATA_DIR}/exit-kiosk"
 rm -f "${EXIT_KIOSK_FILE}"
 until curl --silent --fail "${HOUSEOS_URL}/api/health" >/dev/null; do
-  sleep 2
+  sleep 0.1
 done
 
 while true; do

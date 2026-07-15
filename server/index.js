@@ -14,6 +14,14 @@ const root = path.resolve(__dirname, '..');
 const dataDir = process.env.HOUSEOS_DATA_DIR ? path.resolve(process.env.HOUSEOS_DATA_DIR) : path.join(root, 'data');
 fs.mkdirSync(dataDir, { recursive: true });
 const packageInfo = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const updateStatusPath = path.join(dataDir, 'update-status.json');
+try {
+  const status = JSON.parse(fs.readFileSync(updateStatusPath, 'utf8'));
+  const serviceRestartFinished = status.status === 'restarting' && status.restartTarget === 'houseos' && String(status.version) === String(packageInfo.version);
+  if (serviceRestartFinished) {
+    fs.writeFileSync(updateStatusPath, JSON.stringify({ ...status, status: 'installed', progress: 100, message: `HouseOS ${status.version} wurde installiert und erfolgreich neu gestartet.`, updatedAt: new Date().toISOString() }, null, 2));
+  }
+} catch {}
 
 const db = new Database(path.join(dataDir, 'houseos.db'));
 db.pragma('journal_mode = WAL');
@@ -48,6 +56,10 @@ db.exec(`
     printer_name TEXT NOT NULL DEFAULT '',
     paper_width INTEGER NOT NULL DEFAULT 58 CHECK (paper_width IN (58, 80)),
     auto_cut INTEGER NOT NULL DEFAULT 1
+  );
+  CREATE TABLE IF NOT EXISTS device_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    weather_city TEXT NOT NULL DEFAULT ''
   );
   CREATE TABLE IF NOT EXISTS print_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,6 +101,7 @@ const seed = db.transaction(() => {
 });
 seed();
 db.prepare("INSERT OR IGNORE INTO print_settings (id, printer_name, paper_width, auto_cut) VALUES (1, '', 58, 1)").run();
+db.prepare("INSERT OR IGNORE INTO device_settings (id, weather_city) VALUES (1, '')").run();
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
@@ -239,10 +252,46 @@ app.get('/api/updates/status', requireAdmin, (_req, res) => {
   catch { res.json({ status: 'idle', message: 'Keine Installation aktiv.' }); }
 });
 
+const geocodeCity = async (city) => {
+  const url = new URL('https://geocoding-api.open-meteo.com/v1/search');
+  url.search = new URLSearchParams({ name: city, count: '1', language: 'de', format: 'json' });
+  const response = await fetch(url);
+  if (!response.ok) throw new Error('Stadtsuche ist momentan nicht erreichbar.');
+  const result = (await response.json()).results?.[0];
+  if (!result || !Number.isFinite(result.latitude) || !Number.isFinite(result.longitude)) throw new Error(`Die Stadt „${city}“ wurde nicht gefunden.`);
+  return { latitude: result.latitude, longitude: result.longitude, location: [result.name, result.admin1].filter(Boolean).filter((part, index, all) => all.indexOf(part) === index).join(', ') };
+};
+
+app.get('/api/device/settings', requireAuth, (_req, res) => {
+  const row = db.prepare('SELECT weather_city AS city FROM device_settings WHERE id = 1').get();
+  res.json({ city: row?.city || '' });
+});
+
+app.put('/api/device/settings', requireAdmin, async (req, res) => {
+  const city = String(req.body?.city || '').trim();
+  if (city.length > 80) return res.status(400).json({ error: 'Der Stadtname darf höchstens 80 Zeichen lang sein.' });
+  try {
+    const place = city ? await geocodeCity(city) : null;
+    db.prepare('UPDATE device_settings SET weather_city = ? WHERE id = 1').run(city);
+    res.json({ ok: true, city, location: place?.location || '' });
+  } catch (error) { res.status(422).json({ error: error instanceof Error ? error.message : 'Die Stadt konnte nicht gespeichert werden.' }); }
+});
+
 const contextCache = new Map();
 app.get('/api/device-context', requireAuth, async (req, res) => {
+  const savedCity = db.prepare('SELECT weather_city AS city FROM device_settings WHERE id = 1').get()?.city || '';
+  const requestedCity = String(req.query.city ?? savedCity).trim();
   let latitudeValue = req.query.lat ?? process.env.HOUSEOS_LATITUDE;
   let longitudeValue = req.query.lon ?? process.env.HOUSEOS_LONGITUDE;
+  let configuredLocation = '';
+  if (requestedCity) {
+    try {
+      const place = await geocodeCity(requestedCity);
+      latitudeValue = place.latitude;
+      longitudeValue = place.longitude;
+      configuredLocation = place.location;
+    } catch (error) { return res.status(422).json({ error: error instanceof Error ? error.message : 'Die festgelegte Stadt wurde nicht gefunden.' }); }
+  }
   if (latitudeValue === undefined || longitudeValue === undefined) {
     try {
       const locationResponse = await fetch('https://ipwho.is/');
@@ -258,7 +307,7 @@ app.get('/api/device-context', requireAuth, async (req, res) => {
   const latitude = Number(latitudeValue);
   const longitude = Number(longitudeValue);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return res.status(400).json({ error: 'Ungültige Koordinaten.' });
-  const cacheKey = `${latitude.toFixed(2)},${longitude.toFixed(2)}`;
+  const cacheKey = requestedCity ? `city:${requestedCity.toLocaleLowerCase('de-DE')}` : `${latitude.toFixed(2)},${longitude.toFixed(2)}`;
   const cached = contextCache.get(cacheKey);
   if (cached && Date.now() - cached.createdAt < 10 * 60 * 1000) return res.json(cached.value);
   try {
@@ -274,8 +323,8 @@ app.get('/api/device-context', requireAuth, async (req, res) => {
     const weather = await weatherResponse.json();
     const place = placeResponse.ok ? await placeResponse.json() : {};
     const address = place.address || {};
-    const location = address.city || address.town || address.village || address.municipality || address.county || 'Aktueller Standort';
-    const value = { location, timezone: weather.timezone, weather: { temperature: weather.current?.temperature_2m, apparentTemperature: weather.current?.apparent_temperature, code: weather.current?.weather_code, minimum: weather.daily?.temperature_2m_min?.[0], maximum: weather.daily?.temperature_2m_max?.[0] } };
+    const location = configuredLocation || address.city || address.town || address.village || address.municipality || address.county || 'Aktueller Standort';
+    const value = { location, configuredCity: requestedCity, timezone: weather.timezone, weather: { temperature: weather.current?.temperature_2m, apparentTemperature: weather.current?.apparent_temperature, code: weather.current?.weather_code, minimum: weather.daily?.temperature_2m_min?.[0], maximum: weather.daily?.temperature_2m_max?.[0] } };
     contextCache.set(cacheKey, { createdAt: Date.now(), value });
     res.json(value);
   } catch (error) {
@@ -322,7 +371,7 @@ for (const [name, config] of Object.entries(collections)) {
   });
 }
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, database: 'sqlite' }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, database: 'sqlite', version: packageInfo.version }));
 
 app.get('/api/printers', requireAuth, async (_req, res) => res.json(await listPrinters()));
 
