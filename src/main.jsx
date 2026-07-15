@@ -2,10 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Check, CheckCircle2, ChevronLeft, ChevronRight, Circle, Clock3, CloudSun, Command,
-  Delete, Home, ListTodo, LockKeyhole, LogOut, MapPin, Maximize2, Minus, Minimize2,
+  Delete, Home, ListTodo, LockKeyhole, MapPin, Maximize2, Minus, Minimize2,
   Plus, Printer, Repeat2, RotateCcw, Search, Settings, ShieldCheck, ShoppingBasket,
   Sparkles, Sun, Tag, Trash2, UserPlus, Users, X, Download, GitBranch, Server, Cpu,
   HardDrive, RefreshCw, MonitorCog,
+  UserRound, Palette, Bell, Accessibility, Camera, Moon, Languages, Volume2,
+  Info, KeyRound, Eye, Contrast, Smartphone, SlidersHorizontal,
+  Power, PowerOff, Lock, Unlock, AlertTriangle, ExternalLink,
 } from 'lucide-react';
 import './styles.css';
 
@@ -16,6 +19,38 @@ const APP_DEFS = {
   printer: { title: 'Print Center', icon: Printer, color: '#667eea', keywords: 'bon drucken vorschau' },
   settings: { title: 'Einstellungen', icon: Settings, color: '#636366', keywords: 'admin benutzer profil pin system update version github' },
 };
+
+const DEFAULT_PREFERENCES = {
+  appearance: 'auto', accent: '#007aff', wallpaper: 'bloom', avatar: '',
+  notifications: true, sounds: true, largeText: false, highContrast: false,
+  reduceMotion: false, language: 'Deutsch',
+};
+const loadPreferences = (memberId) => {
+  try { return { ...DEFAULT_PREFERENCES, ...JSON.parse(localStorage.getItem(`houseos.preferences.${memberId}`)) }; }
+  catch { return { ...DEFAULT_PREFERENCES }; }
+};
+
+function ProfileAvatar({ member, preferences, className = '' }) {
+  const avatar = preferences?.avatar || loadPreferences(member.id).avatar;
+  return <span className={className} style={{ '--avatar': member.color, backgroundImage: avatar ? `url(${avatar})` : undefined }}>{avatar ? null : initials(member.name)}</span>;
+}
+
+const prepareAvatar = (file) => new Promise((resolve, reject) => {
+  if (!file?.type.startsWith('image/')) return reject(new Error('Bitte wähle eine Bilddatei aus.'));
+  const reader = new FileReader();
+  reader.onerror = () => reject(new Error('Das Bild konnte nicht gelesen werden.'));
+  reader.onload = () => {
+    const image = new Image();
+    image.onerror = () => reject(new Error('Das Bildformat wird nicht unterstützt.'));
+    image.onload = () => {
+      const size = Math.min(image.width, image.height); const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 320;
+      const context = canvas.getContext('2d'); context.drawImage(image, (image.width - size) / 2, (image.height - size) / 2, size, size, 0, 0, 320, 320);
+      resolve(canvas.toDataURL('image/jpeg', .86));
+    };
+    image.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+});
 
 const defaultMembers = [
   { id: 1, name: 'Oliver', role: 'Haushaltsadmin', color: '#007aff', isAdmin: true },
@@ -139,7 +174,7 @@ function App() {
   const logout = async () => { await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {}); setMember(null); await refreshUsers(); };
   if (booting) return <BootScreen />;
   if (!member) return <LoginScreen users={users} onAuthenticated={setMember} onUsersChanged={refreshUsers} error={authError} setError={setAuthError} />;
-  return <Desktop currentMember={member} onLogout={logout} />;
+  return <Desktop currentMember={member} onMemberChange={setMember} onLogout={logout} />;
 }
 
 function BootScreen() {
@@ -183,11 +218,11 @@ function LoginScreen({ users, onAuthenticated, onUsersChanged, error, setError }
       <div className="login-brand"><span><Home size={19} /></span><strong>houseos</strong></div>
       {!selected ? <>
         <div className="login-copy"><small>WILLKOMMEN ZU HAUSE</small><h1>Wer bist du?</h1><p>Wähle dein persönliches HouseOS-Profil.</p></div>
-        <div className="login-users">{users.map(user => <button key={user.id} onClick={() => choose(user)}><span className="login-avatar" style={{ '--avatar': user.color }}>{initials(user.name)}</span><strong>{user.name}</strong><small>{user.role}</small></button>)}</div>
+        <div className="login-users">{users.map(user => <button key={user.id} onClick={() => choose(user)}><ProfileAvatar member={user} className="login-avatar profile-image" /><strong>{user.name}</strong><small>{user.role}</small></button>)}</div>
         {!users.length && <p className="login-error">Der HouseOS-Dienst ist nicht erreichbar.</p>}
       </> : <form onSubmit={submit} className="pin-login">
         <button type="button" className="login-back" onClick={() => setSelected(null)}><ChevronLeft size={17} /> Benutzer wechseln</button>
-        <span className="login-avatar selected" style={{ '--avatar': selected.color }}>{initials(selected.name)}</span>
+        <ProfileAvatar member={selected} className="login-avatar selected profile-image" />
         <h1>{stage === 'login' ? `Hallo, ${selected.name}` : stage === 'create' ? 'PIN einrichten' : 'PIN wiederholen'}</h1>
         <p>{stage === 'login' ? 'Gib deine PIN ein, um HouseOS zu entsperren.' : stage === 'create' ? 'Lege eine persönliche PIN mit 4 bis 6 Ziffern fest.' : 'Gib dieselbe PIN zur Bestätigung erneut ein.'}</p>
         <div className="pin-dots" aria-label={`${pin.length} Ziffern eingegeben`}>{Array.from({ length: 6 }, (_, index) => <i className={index < pin.length ? 'filled' : ''} key={index} />)}</div>
@@ -200,7 +235,7 @@ function LoginScreen({ users, onAuthenticated, onUsersChanged, error, setError }
   </main>;
 }
 
-function Desktop({ currentMember, onLogout }) {
+function Desktop({ currentMember, onMemberChange, onLogout }) {
   const [time, setTime] = useState(new Date());
   const [activeApps, setActiveApps] = useState(['today']);
   const [minimizedApps, setMinimizedApps] = useState([]);
@@ -208,52 +243,75 @@ function Desktop({ currentMember, onLogout }) {
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [toast, setToast] = useState('');
   const [printType, setPrintType] = useState('daily');
+  const [preferences, setPreferences] = useState(() => loadPreferences(currentMember.id));
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false);
+  const [locked, setLocked] = useState(false);
   const [tasks, setTasks, tasksOnline] = useDatabaseCollection('tasks', defaultTasks, true);
   const [shopping, setShopping, shoppingOnline] = useDatabaseCollection('shopping', defaultShopping, true);
   const [members, setMembers, membersOnline] = useDatabaseCollection('members', defaultMembers, true);
   const [device, refreshDevice] = useDeviceContext(true);
   const databaseOnline = tasksOnline && shoppingOnline && membersOnline;
   useEffect(() => { const tick = setInterval(() => setTime(new Date()), 1000); return () => clearInterval(tick); }, []);
+  useEffect(() => { localStorage.setItem(`houseos.preferences.${currentMember.id}`, JSON.stringify(preferences)); }, [currentMember.id, preferences]);
+  useEffect(() => { const query = window.matchMedia?.('(prefers-color-scheme: dark)'); if (!query) return; const update = event => setSystemDark(event.matches); query.addEventListener?.('change', update); return () => query.removeEventListener?.('change', update); }, []);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 2600); return () => clearTimeout(timer); }, [toast]);
+  useEffect(() => {
+    let timer;
+    const armLock = () => { clearTimeout(timer); if (!locked) timer = setTimeout(() => setLocked(true), 90_000); };
+    const events = ['pointerdown', 'keydown', 'touchstart']; events.forEach(name => window.addEventListener(name, armLock, { passive: true })); armLock();
+    return () => { clearTimeout(timer); events.forEach(name => window.removeEventListener(name, armLock)); };
+  }, [locked]);
   const openApp = (id) => { setActiveApps(apps => [...apps.filter(app => app !== id), id]); setMinimizedApps(apps => apps.filter(app => app !== id)); setFocused(id); setLauncherOpen(false); };
   const openPrint = (type) => { setPrintType(type); openApp('printer'); };
   const focusApp = (id) => { setActiveApps(apps => [...apps.filter(app => app !== id), id]); setFocused(id); };
   const closeApp = (id) => { setActiveApps(apps => { const remaining = apps.filter(app => app !== id); setFocused(current => current === id ? (remaining.filter(app => !minimizedApps.includes(app)).at(-1) ?? null) : current); return remaining; }); setMinimizedApps(apps => apps.filter(app => app !== id)); };
   const minimizeApp = (id) => { setMinimizedApps(apps => apps.includes(id) ? apps : [...apps, id]); setFocused(current => current === id ? (activeApps.filter(app => app !== id && !minimizedApps.includes(app)).at(-1) ?? null) : current); };
   const temp = device.weather?.temperature;
-  return <main className="desktop" onClick={() => launcherOpen && setLauncherOpen(false)}>
+  const resolvedAppearance = preferences.appearance === 'auto' ? (systemDark ? 'dark' : 'light') : preferences.appearance;
+  return <main className={`desktop theme-${resolvedAppearance} wallpaper-${preferences.wallpaper} ${preferences.largeText ? 'large-text' : ''} ${preferences.highContrast ? 'high-contrast' : ''} ${preferences.reduceMotion ? 'reduce-motion' : ''}`} style={{ '--blue': preferences.accent }} onClick={() => launcherOpen && setLauncherOpen(false)}>
     <div className="ambient ambient-one" /><div className="ambient ambient-two" />
     <header className="topbar">
       <button className="brand" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }}><span className="brand-mark"><Home size={16} /></span><span>house<span>os</span></span></button>
       <button className="topbar-center location-button" onClick={refreshDevice} title="Standort und Wetter aktualisieren"><CloudSun size={16} /><span>{device.location}</span>{Number.isFinite(temp) && <strong>{Math.round(temp)}°</strong>}</button>
-      <div className="topbar-actions"><span className={`system-ok ${databaseOnline ? '' : 'offline'}`}><i /> {databaseOnline ? 'Synchronisiert' : 'Nur lokal'}</span><span>{time.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: 'short' })}</span><strong>{time.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</strong><button className="logout" onClick={onLogout} title="HouseOS sperren"><LogOut size={15} /></button></div>
+      <div className="topbar-actions"><span className={`system-ok ${databaseOnline ? '' : 'offline'}`}><i /> {databaseOnline ? 'Synchronisiert' : 'Nur lokal'}</span><span>{time.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: 'short' })}</span><strong>{time.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</strong><button className="logout" onClick={() => setLocked(true)} title="HouseOS sperren" aria-label="HouseOS sperren"><Lock size={15} /></button></div>
     </header>
     <section className="welcome-copy"><p>{greeting(time.getHours())}, {currentMember.name}</p><h1>Dein Zuhause ist<br /><em>bereit für den Tag.</em></h1></section>
-    <aside className="desktop-icons">{Object.entries(APP_DEFS).filter(([id]) => id !== 'settings' || currentMember.isAdmin).map(([id, app]) => <DesktopIcon key={id} app={app} onClick={() => openApp(id)} />)}</aside>
+    <aside className="desktop-icons">{Object.entries(APP_DEFS).map(([id, app]) => <DesktopIcon key={id} app={app} onClick={() => openApp(id)} />)}</aside>
     {launcherOpen && <Launcher onOpen={openApp} onClose={() => setLauncherOpen(false)} currentMember={currentMember} />}
     <section className="window-layer">{Object.keys(APP_DEFS).filter(id => activeApps.includes(id)).map(id => <Window key={id} id={id} app={APP_DEFS[id]} onClose={() => closeApp(id)} onMinimize={() => minimizeApp(id)} onFocus={() => focusApp(id)} focused={focused === id} minimized={minimizedApps.includes(id)} z={20 + activeApps.indexOf(id)}>
       {id === 'today' && <Today tasks={tasks} shopping={shopping} onOpen={openApp} onPrint={() => openPrint('daily')} time={time} device={device} member={currentMember} />}
       {id === 'tasks' && <Tasks items={tasks} setItems={setTasks} members={members} currentMember={currentMember} />}
       {id === 'shopping' && <Shopping items={shopping} setItems={setShopping} onPrint={() => openPrint('shopping')} />}
       {id === 'printer' && <PrintCenter tasks={tasks} shopping={shopping} notify={setToast} initialType={printType} device={device} />}
-      {id === 'settings' && <SettingsApp items={members} setItems={setMembers} tasks={tasks} setTasks={setTasks} notify={setToast} />}
+      {id === 'settings' && <SettingsApp member={currentMember} onMemberChange={onMemberChange} preferences={preferences} setPreferences={setPreferences} items={members} setItems={setMembers} tasks={tasks} setTasks={setTasks} notify={setToast} />}
     </Window>)}</section>
-    <nav className="dock"><button className="dock-home" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }}><Command size={20} /></button><span className="dock-separator" />{Object.entries(APP_DEFS).filter(([id]) => id !== 'settings' || currentMember.isAdmin).map(([id, app]) => { const Icon = app.icon; return <button key={id} className={`dock-app ${focused === id ? 'focused' : ''}`} onClick={() => openApp(id)} style={{ '--app': app.color }} title={app.title}><Icon size={21} />{activeApps.includes(id) && <i />}</button>; })}</nav>
-    {toast && <div className="toast"><CheckCircle2 size={18} />{toast}</div>}
+    <nav className="dock"><button className="dock-home" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }}><Command size={20} /></button><span className="dock-separator" />{Object.entries(APP_DEFS).map(([id, app]) => { const Icon = app.icon; return <button key={id} className={`dock-app ${focused === id ? 'focused' : ''}`} onClick={() => openApp(id)} style={{ '--app': app.color }} title={app.title}><Icon size={21} />{activeApps.includes(id) && <i />}</button>; })}</nav>
+    {toast && <div className="toast" role="status" aria-live="polite"><CheckCircle2 size={18} />{toast}</div>}
+    {locked && <LockScreen member={currentMember} preferences={preferences} time={time} onUnlock={onLogout} />}
   </main>;
+}
+
+function LockScreen({ member, preferences, time, onUnlock }) {
+  return <section className="lock-screen" onDoubleClick={onUnlock}>
+    <div className="lock-orb lock-orb-one" /><div className="lock-orb lock-orb-two" />
+    <header><Lock size={15} /><span>HouseOS ist gesperrt</span></header>
+    <div className="lock-clock"><span>{time.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</span><strong>{time.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })}</strong></div>
+    <div className="lock-owner"><ProfileAvatar member={member} preferences={preferences} className="lock-avatar profile-image" /><span><small>ANGEMELDET ALS</small><strong>{member.name}</strong></span></div>
+    <button onClick={onUnlock}><Unlock size={16} /> Mit PIN entsperren</button><p>Doppelklicken oder Schaltfläche wählen, um fortzufahren</p>
+  </section>;
 }
 
 function DesktopIcon({ app, onClick }) { const Icon = app.icon; return <button className="desktop-icon" onClick={onClick}><span style={{ '--app': app.color }}><Icon size={25} /></span><small>{app.title}</small></button>; }
 
 function Launcher({ onOpen, onClose, currentMember }) {
   const [query, setQuery] = useState('');
-  const matches = Object.entries(APP_DEFS).filter(([id, app]) => (id !== 'settings' || currentMember.isAdmin) && `${app.title} ${app.keywords}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const matches = Object.entries(APP_DEFS).filter(([, app]) => `${app.title} ${app.keywords}`.toLowerCase().includes(query.trim().toLowerCase()));
   return <div className="launcher" onClick={event => event.stopPropagation()}>
     <div className="launcher-head"><div><small>HOUSEOS</small><h2>Was möchtest du tun?</h2></div><button onClick={onClose}><X size={18} /></button></div>
     <label className="search"><Search size={17} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && matches.length) onOpen(matches[0][0]); }} placeholder="Apps und Aktionen suchen …" /></label>
     <div className="launcher-grid">{matches.map(([id, app]) => { const Icon = app.icon; return <button key={id} onClick={() => onOpen(id)}><span style={{ '--app': app.color }}><Icon size={22} /></span><p>{app.title}</p><ChevronRight size={16} /></button>; })}</div>
     {!matches.length && <div className="launcher-empty"><Search size={20} /><strong>Keine Treffer</strong><small>Versuche einen anderen Suchbegriff.</small></div>}
-    <div className="launcher-footer"><span className="avatar" style={{ '--avatar': currentMember.color }}>{initials(currentMember.name)}</span><span><strong>{currentMember.name}</strong><small>{currentMember.role}</small></span><span className="online">Angemeldet</span></div>
+    <div className="launcher-footer"><ProfileAvatar className="avatar profile-image" member={currentMember} /><span><strong>{currentMember.name}</strong><small>{currentMember.role}</small></span><span className="online">Angemeldet</span></div>
   </div>;
 }
 
@@ -304,16 +362,46 @@ function Shopping({ items, setItems, onPrint }) {
     <div className="full-list">{items.map(item => <div className={item.checked ? 'done' : ''} key={item.id}><button className="check" onClick={() => setItems(items.map(candidate => candidate.id === item.id ? { ...candidate, checked: !candidate.checked } : candidate))}>{item.checked && <Check size={14} />}</button><span><strong>{item.text}</strong><small>{item.category}</small></span><button className="delete" onClick={() => setItems(items.filter(candidate => candidate.id !== item.id))}><Trash2 size={16} /></button></div>)}</div></div>;
 }
 
-function SettingsApp({ items, setItems, tasks, setTasks, notify }) {
-  const [tab, setTab] = useState('users');
-  return <div className="app-page settings-page">
-    <div className="app-heading"><div><span className="eyebrow">HOUSEOS ADMIN</span><h2>Einstellungen</h2><p>Benutzer, Raspberry Pi und Updates zentral verwalten.</p></div><span className="settings-badge"><ShieldCheck size={17} /> Administrator</span></div>
-    <nav className="settings-tabs">{[['users','Benutzer',Users],['system','System',Server],['updates','Updates',Download]].map(([id,label,Icon]) => <button key={id} className={tab === id ? 'selected' : ''} onClick={() => setTab(id)}><Icon size={16} />{label}</button>)}</nav>
-    <div className="settings-body">
-      {tab === 'users' && <Members embedded items={items} setItems={setItems} tasks={tasks} setTasks={setTasks} notify={notify} />}
-      {tab !== 'users' && <SystemPanel section={tab} notify={notify} />}
-    </div>
+function SettingsApp({ member, onMemberChange, preferences, setPreferences, items, setItems, tasks, setTasks, notify }) {
+  const [section, setSection] = useState('profile'); const [profileName, setProfileName] = useState(member.name); const [saving, setSaving] = useState(false); const [error, setError] = useState(''); const fileInput = useRef(null);
+  const groups = [
+    { label: 'PERSÖNLICH', items: [['profile','Profil',UserRound,'#8e8e93'],['appearance','Darstellung',Palette,'#007aff'],['notifications','Mitteilungen',Bell,'#ff3b30'],['accessibility','Bedienungshilfen',Accessibility,'#007aff']] },
+    { label: 'ALLGEMEIN', items: [['general','Allgemein',SlidersHorizontal,'#8e8e93']] },
+    ...(member.isAdmin ? [{ label: 'HOUSEOS ADMIN', items: [['users','Benutzer',Users,'#34c759'],['system','System',Server,'#5856d6'],['updates','Updates',Download,'#007aff']] }] : []),
+  ];
+  const updatePreference = (key, value) => setPreferences(current => ({ ...current, [key]: value }));
+  const uploadAvatar = async event => { try { const avatar = await prepareAvatar(event.target.files?.[0]); updatePreference('avatar', avatar); notify('Profilbild aktualisiert'); } catch (uploadError) { setError(uploadError.message); } event.target.value = ''; };
+  const saveProfile = async event => {
+    event.preventDefault(); if (profileName.trim().length < 2) return setError('Bitte gib mindestens zwei Zeichen ein.');
+    setSaving(true); setError('');
+    try { const response = await fetch('/api/profile', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: profileName.trim(), color: preferences.accent }) }); const result = await response.json(); if (!response.ok) throw new Error(result.error); onMemberChange(result.member); notify('Profil gespeichert'); }
+    catch (saveError) { setError(saveError.message || 'Profil konnte nicht gespeichert werden.'); } finally { setSaving(false); }
+  };
+  return <div className="settings-shell">
+    <aside className="settings-sidebar">
+      <label className="settings-search"><Search size={14} /><span>Einstellungen</span></label>
+      <button className={`settings-account ${section === 'profile' ? 'selected' : ''}`} onClick={() => setSection('profile')}><ProfileAvatar member={member} preferences={preferences} className="settings-avatar profile-image" /><span><strong>{member.name}</strong><small>{member.role}</small></span><ChevronRight size={15} /></button>
+      {groups.map(group => <div className="settings-group" key={group.label}><small>{group.label}</small>{group.items.filter(([id]) => id !== 'profile').map(([id,label,Icon,color]) => <button key={id} className={section === id ? 'selected' : ''} onClick={() => setSection(id)}><i style={{ '--category': color }}><Icon size={14} /></i><span>{label}</span><ChevronRight size={14} /></button>)}</div>)}
+    </aside>
+    <main className="settings-detail">
+      {section === 'profile' && <section className="preference-panel"><header><span className="settings-kicker">PERSÖNLICH</span><h2>Dein Profil</h2><p>So erscheinst du in HouseOS.</p></header><form className="profile-settings" onSubmit={saveProfile}><div className="profile-photo-wrap"><ProfileAvatar member={{ ...member, name: profileName }} preferences={preferences} className="profile-photo profile-image" /><button type="button" onClick={() => fileInput.current?.click()}><Camera size={15} /> Foto ändern</button><input ref={fileInput} hidden type="file" accept="image/*" onChange={uploadAvatar} /></div><div className="settings-card profile-fields"><label><span>Name</span><input value={profileName} onChange={event => setProfileName(event.target.value)} /></label><div className="settings-row"><span><strong>Rolle</strong><small>Vom Haushaltsadmin verwaltet</small></span><b>{member.role}</b></div></div><div className="profile-actions">{preferences.avatar && <button type="button" className="text-button danger" onClick={() => updatePreference('avatar', '')}>Foto entfernen</button>}<button className="settings-save" disabled={saving}>{saving ? 'Wird gespeichert …' : 'Änderungen sichern'}</button></div>{error && <p className="settings-error">{error}</p>}</form></section>}
+      {section === 'appearance' && <AppearanceSettings preferences={preferences} updatePreference={updatePreference} />}
+      {section === 'notifications' && <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Mitteilungen" description="Lege fest, wie HouseOS dich informiert." /><div className="settings-card"><SettingSwitch icon={Bell} color="#ff3b30" title="Mitteilungen erlauben" subtitle="Hinweise zu Aufgaben und gemeinsamen Listen" checked={preferences.notifications} onChange={value => updatePreference('notifications', value)} /><SettingSwitch icon={Volume2} color="#ff9500" title="Töne" subtitle="Bei wichtigen Hinweisen einen Ton abspielen" checked={preferences.sounds} onChange={value => updatePreference('sounds', value)} /></div></section>}
+      {section === 'accessibility' && <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Bedienungshilfen" description="Passe Lesbarkeit und Bewegungen an deine Bedürfnisse an." /><div className="settings-card"><SettingSwitch icon={Eye} color="#007aff" title="Größerer Text" subtitle="Schrift in HouseOS etwas vergrößern" checked={preferences.largeText} onChange={value => updatePreference('largeText', value)} /><SettingSwitch icon={Contrast} color="#5856d6" title="Mehr Kontrast" subtitle="Trennlinien und Flächen deutlicher anzeigen" checked={preferences.highContrast} onChange={value => updatePreference('highContrast', value)} /><SettingSwitch icon={Accessibility} color="#34c759" title="Bewegung reduzieren" subtitle="Animationen und Übergänge minimieren" checked={preferences.reduceMotion} onChange={value => updatePreference('reduceMotion', value)} /></div></section>}
+      {section === 'general' && <section className="preference-panel"><PreferenceHeader kicker="HOUSEOS" title="Allgemein" description="Grundlegende Einstellungen für dieses Gerät." /><div className="settings-card"><div className="settings-row icon-row"><i style={{ '--category': '#007aff' }}><Languages size={15} /></i><span><strong>Sprache</strong><small>Sprache der Oberfläche</small></span><select value={preferences.language} onChange={event => updatePreference('language', event.target.value)}><option>Deutsch</option><option>English</option></select></div><div className="settings-row icon-row"><i style={{ '--category': '#8e8e93' }}><Info size={15} /></i><span><strong>HouseOS</strong><small>Persönliches Zuhause-Dashboard</small></span><b>Version 0.3.0</b></div><div className="settings-row icon-row"><i style={{ '--category': '#5856d6' }}><KeyRound size={15} /></i><span><strong>PIN & Sicherheit</strong><small>Dein Profil wird beim Verlassen gesperrt</small></span><b>Aktiv</b></div></div></section>}
+      {section === 'users' && member.isAdmin && <section className="admin-settings-panel"><Members embedded items={items} setItems={setItems} tasks={tasks} setTasks={setTasks} notify={notify} /></section>}
+      {['system','updates'].includes(section) && member.isAdmin && <section className="admin-settings-panel"><SystemPanel section={section} notify={notify} /></section>}
+    </main>
   </div>;
+}
+
+function PreferenceHeader({ kicker, title, description }) { return <header><span className="settings-kicker">{kicker}</span><h2>{title}</h2><p>{description}</p></header>; }
+
+function SettingSwitch({ icon: Icon, color, title, subtitle, checked, onChange }) { return <label className="settings-row icon-row switch-row"><i style={{ '--category': color }}><Icon size={15} /></i><span><strong>{title}</strong><small>{subtitle}</small></span><input type="checkbox" checked={checked} onChange={event => onChange(event.target.checked)} /><em /></label>; }
+
+function AppearanceSettings({ preferences, updatePreference }) {
+  const accents = ['#007aff','#5856d6','#af52de','#ff2d55','#ff3b30','#ff9500','#ffcc00','#34c759'];
+  return <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Darstellung" description="Wähle den Look, der zu dir und deinem Zuhause passt." /><h3 className="settings-section-title">Erscheinungsbild</h3><div className="appearance-options">{[['auto','Automatisch'],['light','Hell'],['dark','Dunkel']].map(([id,label]) => <button key={id} className={preferences.appearance === id ? 'selected' : ''} onClick={() => updatePreference('appearance', id)}><span className={`appearance-preview ${id}`}><i /><i /><i /></span><strong>{label}</strong>{preferences.appearance === id && <CheckCircle2 size={16} />}</button>)}</div><h3 className="settings-section-title">Akzentfarbe</h3><div className="settings-card color-settings"><div className="settings-row"><span><strong>Farbe</strong><small>Für Schaltflächen und Auswahlmarkierungen</small></span><div className="accent-picker">{accents.map(color => <button aria-label={`Akzentfarbe ${color}`} key={color} className={preferences.accent === color ? 'selected' : ''} style={{ '--accent': color }} onClick={() => updatePreference('accent', color)}>{preferences.accent === color && <Check size={13} />}</button>)}</div></div></div><h3 className="settings-section-title">Hintergrund</h3><div className="wallpaper-picker">{[['bloom','Bloom'],['ocean','Ozean'],['sunset','Abendrot'],['graphite','Graphit']].map(([id,label]) => <button key={id} className={preferences.wallpaper === id ? 'selected' : ''} onClick={() => updatePreference('wallpaper', id)}><i className={`wallpaper-swatch ${id}`} /> <span>{label}</span>{preferences.wallpaper === id && <CheckCircle2 size={15} />}</button>)}</div></section>;
 }
 
 function SystemPanel({ section, notify }) {
@@ -325,10 +413,25 @@ function SystemPanel({ section, notify }) {
   const uptime = info ? `${Math.floor(info.uptimeSeconds / 86400)} T · ${Math.floor(info.uptimeSeconds % 86400 / 3600)} Std` : '–';
   if (section === 'system') return <section className="system-section"><div className="section-heading"><div><h3>Raspberry Pi</h3><p>Technischer Zustand der HouseOS-Zentrale.</p></div><button onClick={loadInfo}><RefreshCw size={14} /> Aktualisieren</button></div>
     <div className="system-grid"><article><span><MonitorCog size={20} /></span><small>HOUSEOS</small><strong>Version {info?.version || '–'}</strong><p>{info?.hostname || 'Wird geladen …'}</p></article><article><span><Cpu size={20} /></span><small>PLATTFORM</small><strong>{info ? `${info.platform} · ${info.architecture}` : '–'}</strong><p>Node.js {info?.nodeVersion || '–'}</p></article><article><span><HardDrive size={20} /></span><small>LAUFZEIT</small><strong>{uptime}</strong><p>Systemdienst automatisch aktiv</p></article><article><span><GitBranch size={20} /></span><small>UPDATEQUELLE</small><strong>{info?.repository || 'Nicht konfiguriert'}</strong><p>{info?.installerReady ? 'Pi-Updater ist bereit' : 'Installation noch nicht eingerichtet'}</p></article></div>
+    <DeviceControls supported={info?.deviceActionsSupported} notify={notify} />
     {info?.updateStatus && <div className={`update-state ${info.updateStatus.status}`}><strong>Letzter Updatestatus</strong><span>{info.updateStatus.message}</span></div>}{error && <p className="settings-error">{error}</p>}</section>;
   return <section className="system-section"><div className="section-heading"><div><h3>Softwareupdate</h3><p>Geprüfte Versionen direkt aus GitHub Releases installieren.</p></div><button onClick={() => checkUpdate(true)} disabled={busy}><RefreshCw size={14} /> {busy ? 'Prüfe …' : 'Neu prüfen'}</button></div>
     <article className="update-card"><div className="update-icon"><Download size={25} /></div><div className="update-copy"><small>INSTALLIERTE VERSION</small><h3>HouseOS {update?.currentVersion || info?.version || '–'}</h3><p>{update?.message || 'GitHub wird auf neue Releases geprüft …'}</p>{update?.hasUpdate && <div className="version-route"><span>v{update.currentVersion}</span><ChevronRight size={15} /><strong>v{update.latestVersion}</strong></div>}{update?.releaseUrl && <a href={update.releaseUrl} target="_blank" rel="noreferrer"><GitBranch size={13} /> Release auf GitHub ansehen</a>}</div><div className="update-actions">{update?.hasUpdate && update?.installable ? <button className="primary" disabled={busy || update.installing || !info?.installerReady} onClick={install}><Download size={15} />{update.installing ? 'Installation läuft …' : 'Update installieren'}</button> : <span className="up-to-date"><CheckCircle2 size={18} /> Aktuell</span>}</div></article>
     {!update?.configured && <div className="setup-hint"><GitBranch size={18} /><span><strong>GitHub noch verbinden</strong><small>Auf dem Pi in <code>/etc/houseos.env</code> den Wert <code>HOUSEOS_GITHUB_REPO=OWNER/REPO</code> setzen.</small></span></div>}{error && <p className="settings-error">{error}</p>}</section>;
+}
+
+const DEVICE_ACTIONS = {
+  reboot: { title: 'Raspberry Pi neu starten?', description: 'HouseOS ist für ungefähr eine Minute nicht erreichbar.', confirm: 'Jetzt neu starten', icon: Power, tone: 'blue' },
+  shutdown: { title: 'Raspberry Pi herunterfahren?', description: 'Das Gerät muss anschließend von Hand wieder eingeschaltet werden.', confirm: 'Herunterfahren', icon: PowerOff, tone: 'red' },
+  exitKiosk: { title: 'Kiosk-Modus verlassen?', description: 'Chromium wird geschlossen und der Raspberry-Pi-Desktop wird sichtbar. Nach einem Neustart beginnt der Kiosk-Modus erneut.', confirm: 'Kiosk verlassen', icon: ExternalLink, tone: 'orange' },
+};
+
+function DeviceControls({ supported, notify }) {
+  const [pending, setPending] = useState(null); const [busy, setBusy] = useState(false); const [error, setError] = useState(''); const action = pending && DEVICE_ACTIONS[pending]; const ActionIcon = action?.icon;
+  const execute = async () => { setBusy(true); setError(''); try { const response = await fetch('/api/system/action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: pending }) }); const result = await response.json(); if (!response.ok) throw new Error(result.error); notify(result.message); setPending(null); } catch (actionError) { setError(actionError.message || 'Aktion konnte nicht ausgeführt werden.'); } finally { setBusy(false); } };
+  return <section className="device-controls"><div className="section-heading compact"><div><h3>Gerätesteuerung</h3><p>Direkte Aktionen für den Raspberry Pi.</p></div></div><div className="device-action-grid"><button onClick={() => setPending('reboot')} disabled={!supported}><i className="blue"><Power size={18} /></i><span><strong>Neu starten</strong><small>HouseOS sauber neu laden</small></span><ChevronRight size={15} /></button><button onClick={() => setPending('shutdown')} disabled={!supported}><i className="red"><PowerOff size={18} /></i><span><strong>Herunterfahren</strong><small>Raspberry Pi ausschalten</small></span><ChevronRight size={15} /></button><button onClick={() => setPending('exitKiosk')} disabled={!supported}><i className="orange"><ExternalLink size={18} /></i><span><strong>Kiosk verlassen</strong><small>Desktop für Admin-Tests öffnen</small></span><ChevronRight size={15} /></button></div>{!supported && <p className="device-hint">Diese Aktionen sind nur direkt auf dem Raspberry Pi verfügbar.</p>}{error && <p className="settings-error">{error}</p>}
+    {action && <div className="confirm-backdrop" role="presentation" onPointerDown={event => event.target === event.currentTarget && !busy && setPending(null)}><div className="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title"><i className={action.tone}><ActionIcon size={24} /></i><h3 id="confirm-title">{action.title}</h3><p>{action.description}</p><div><button disabled={busy} onClick={() => setPending(null)}>Abbrechen</button><button disabled={busy} className={`confirm-${action.tone}`} onClick={execute}>{busy ? 'Wird ausgeführt …' : action.confirm}</button></div></div></div>}
+  </section>;
 }
 
 const MEMBER_COLORS = ['#007aff', '#af52de', '#ff2d55', '#ff9500', '#30b67a', '#5e5ce6'];
