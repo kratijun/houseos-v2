@@ -157,6 +157,21 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
+app.patch('/api/profile', requireAuth, (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  const color = String(req.body?.color || '').trim();
+  if (name.length < 2 || name.length > 40) return res.status(400).json({ error: 'Der Name muss zwischen 2 und 40 Zeichen lang sein.' });
+  if (!/^#[0-9a-f]{6}$/i.test(color)) return res.status(400).json({ error: 'Die Akzentfarbe ist ungültig.' });
+  const duplicate = db.prepare('SELECT id FROM members WHERE lower(name) = lower(?) AND id <> ?').get(name, req.member.id);
+  if (duplicate) return res.status(409).json({ error: 'Dieser Name wird bereits verwendet.' });
+  const update = db.transaction(() => {
+    if (name !== req.member.name) db.prepare('UPDATE tasks SET person = ? WHERE person = ?').run(name, req.member.name);
+    db.prepare('UPDATE members SET name = ?, color = ? WHERE id = ?').run(name, color, req.member.id);
+  });
+  update();
+  res.json({ member: { ...req.member, name, color } });
+});
+
 app.get('/api/system/info', requireAdmin, (_req, res) => {
   let updateStatus = null;
   try { updateStatus = JSON.parse(fs.readFileSync(path.join(dataDir, 'update-status.json'), 'utf8')); } catch {}
@@ -170,8 +185,25 @@ app.get('/api/system/info', requireAdmin, (_req, res) => {
     uptimeSeconds: Math.round(os.uptime()),
     repository: process.env.HOUSEOS_GITHUB_REPO || '',
     installerReady: process.platform === 'linux' && validRepository(process.env.HOUSEOS_GITHUB_REPO || ''),
+    deviceActionsSupported: process.platform === 'linux',
     updateStatus,
   });
+});
+
+app.post('/api/system/action', requireAdmin, (req, res) => {
+  const action = String(req.body?.action || '');
+  if (!['reboot', 'shutdown', 'exitKiosk'].includes(action)) return res.status(400).json({ error: 'Unbekannte Geräteaktion.' });
+  if (process.platform !== 'linux') return res.status(501).json({ error: 'Geräteaktionen sind nur auf dem Raspberry Pi verfügbar.' });
+  if (action === 'exitKiosk') {
+    try { fs.writeFileSync(path.join(dataDir, 'exit-kiosk'), new Date().toISOString()); }
+    catch { return res.status(500).json({ error: 'Kiosk-Modus konnte nicht vorbereitet werden.' }); }
+    res.status(202).json({ ok: true, message: 'Der Kiosk-Modus wird beendet.' });
+    setTimeout(() => execFile('pkill', ['-TERM', '-u', os.userInfo().username, '-f', 'chromium.*--kiosk'], { windowsHide: true }, () => {}), 350);
+    return;
+  }
+  const command = action === 'reboot' ? 'reboot' : 'poweroff';
+  res.status(202).json({ ok: true, message: action === 'reboot' ? 'Der Raspberry Pi wird neu gestartet.' : 'Der Raspberry Pi wird heruntergefahren.' });
+  setTimeout(() => execFile('sudo', ['-n', 'systemctl', command], { windowsHide: true }, () => {}), 500);
 });
 
 let updateCache = null;

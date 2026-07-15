@@ -47,6 +47,8 @@ cp /opt/houseos/deploy/houseos-updater.service /etc/systemd/system/houseos-updat
 SYSTEMCTL_PATH="$(command -v systemctl)"
 cat >/etc/sudoers.d/houseos-updater <<EOF
 ${HOUSEOS_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_PATH} --no-block start houseos-updater.service
+${HOUSEOS_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_PATH} reboot
+${HOUSEOS_USER} ALL=(root) NOPASSWD: ${SYSTEMCTL_PATH} poweroff
 EOF
 chmod 440 /etc/sudoers.d/houseos-updater
 visudo -cf /etc/sudoers.d/houseos-updater
