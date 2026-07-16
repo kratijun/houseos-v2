@@ -76,11 +76,14 @@ Für Direktdruck auf dem Raspberry Pi muss CUPS einschließlich der Befehle `lp`
 
 - **Heute:** Wetter, Termin, offene Aufgaben und Tagesübersicht
 - **Aufgaben:** Aufgaben anlegen, Personen zuweisen, abhaken und löschen
+- **Haushaltspunkte:** 10 Punkte pro erledigter Aufgabe, persönliche Wochenserien und Auszeichnungen
 - **Einkauf:** Gemeinsame Einkaufsliste verwalten
 - **Print Center:** Tages-, Einkaufs- und Aufgabenbons als 58-/80-mm-Vorschau und Direktdruck
 - **Mitglieder:** Haushaltsmitglieder anlegen, bearbeiten und entfernen
 
 Mitglieder, Aufgaben und Einkäufe werden dauerhaft in SQLite gespeichert. Ist die API vorübergehend nicht erreichbar, verwendet die Oberfläche automatisch den lokalen Browser-Speicher als Fallback.
+
+Nach einer Minute ohne Eingabe wechselt HouseOS standardmäßig in den gemeinsamen Ruhe- und Sperrbildschirm. Dort bleiben Uhrzeit, Wetter und nächste Aufgaben sichtbar. Beim Hochziehen folgt der Sperrbildschirm direkt der Bewegung und gibt den darunterliegenden Profil- und PIN-Anmeldebildschirm frei; wird nicht weit genug gezogen, gleitet er wieder zurück. Die Pfeiltaste nach oben ist die Tastatur-Alternative. Wird der frühe Ruhemodus unter **Setup → Allgemein → HouseOS** deaktiviert, sperrt HouseOS das Profil nach 15 Minuten Inaktivität. Geöffnete Fenster und ihre Positionen werden je Profil gespeichert und nach der Anmeldung wiederhergestellt.
 
 ## Desktop-Fenster
 

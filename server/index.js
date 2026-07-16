@@ -71,6 +71,14 @@ db.exec(`
     message TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS task_completions (
+    task_id INTEGER PRIMARY KEY,
+    member_id INTEGER,
+    person_name TEXT NOT NULL DEFAULT '',
+    points INTEGER NOT NULL DEFAULT 10,
+    completed_on TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 const ensureColumn = (table, column, definition) => {
@@ -351,6 +359,48 @@ const collections = {
   },
 };
 
+const startOfWeek = (date) => {
+  const value = new Date(`${date}T12:00:00`);
+  const weekday = value.getDay() || 7;
+  value.setDate(value.getDate() - weekday + 1);
+  return value.toISOString().slice(0, 10);
+};
+
+const progressPayload = (currentMemberId) => {
+  const members = db.prepare(`
+    SELECT m.id, m.name, m.color, COALESCE(SUM(c.points), 0) AS points,
+      COUNT(c.task_id) AS completedTasks
+    FROM members m
+    LEFT JOIN task_completions c ON c.member_id = m.id
+    GROUP BY m.id
+    ORDER BY points DESC, completedTasks DESC, m.name ASC
+  `).all();
+  const completionDates = db.prepare('SELECT member_id AS memberId, completed_on AS completedOn FROM task_completions ORDER BY completed_on DESC').all();
+  const currentWeek = startOfWeek(new Date().toISOString().slice(0, 10));
+  const withStreaks = members.map(member => {
+    const weeks = new Set(completionDates.filter(item => item.memberId === member.id).map(item => startOfWeek(item.completedOn)));
+    let streak = 0;
+    const cursor = new Date(`${currentWeek}T12:00:00`);
+    if (!weeks.has(currentWeek)) cursor.setDate(cursor.getDate() - 7);
+    while (weeks.has(cursor.toISOString().slice(0, 10))) {
+      streak += 1;
+      cursor.setDate(cursor.getDate() - 7);
+    }
+    const awards = [
+      member.completedTasks >= 1 && { id: 'first', title: 'Erster Schritt', icon: 'sparkles' },
+      member.completedTasks >= 10 && { id: 'ten', title: 'Alltagsheld', icon: 'award' },
+      member.points >= 250 && { id: 'points', title: 'Punkteprofi', icon: 'trophy' },
+      streak >= 4 && { id: 'streak', title: 'Serienstar', icon: 'flame' },
+    ].filter(Boolean);
+    return { ...member, points: Number(member.points), completedTasks: Number(member.completedTasks), streak, awards };
+  });
+  return {
+    members: withStreaks,
+    householdPoints: withStreaks.reduce((sum, member) => sum + member.points, 0),
+    currentMember: withStreaks.find(member => member.id === currentMemberId) || null,
+  };
+};
+
 for (const [name, config] of Object.entries(collections)) {
   app.get(`/api/${name}`, requireAuth, (_req, res) => {
     const rows = db.prepare(config.select).all().map((row) => ({ ...row, ...(name === 'members' && { isAdmin: Boolean(row.isAdmin) }), ...(name === 'tasks' && { done: Boolean(row.done) }), ...(name === 'shopping' && { checked: Boolean(row.checked) }) }));
@@ -364,13 +414,30 @@ for (const [name, config] of Object.entries(collections)) {
     if (items.some((item) => !item.id || (!(item.name || item.text)))) return res.status(400).json({ error: 'Name oder Text fehlt.' });
     const replace = db.transaction(() => {
       const pinHashes = name === 'members' ? new Map(db.prepare('SELECT id, pin_hash AS pinHash FROM members').all().map(member => [member.id, member.pinHash])) : null;
+      const previousTasks = name === 'tasks' ? new Map(db.prepare('SELECT id, done FROM tasks').all().map(task => [task.id, Boolean(task.done)])) : null;
       db.prepare(`DELETE FROM ${name}`).run();
       for (const item of items) config.insert.run(name === 'members' ? { ...item, pinHash: pinHashes.get(item.id) || '' } : item);
+      if (name === 'tasks') {
+        const validIds = new Set(items.map(item => item.id));
+        for (const completion of db.prepare('SELECT task_id AS taskId FROM task_completions').all()) {
+          if (!validIds.has(completion.taskId)) db.prepare('DELETE FROM task_completions WHERE task_id = ?').run(completion.taskId);
+        }
+        for (const item of items) {
+          if (!item.done) {
+            db.prepare('DELETE FROM task_completions WHERE task_id = ?').run(item.id);
+          } else if (previousTasks.get(item.id) === false) {
+            const assignee = db.prepare('SELECT id FROM members WHERE lower(name) = lower(?)').get(item.person);
+            db.prepare("INSERT OR IGNORE INTO task_completions (task_id, member_id, person_name, points, completed_on) VALUES (?, ?, ?, 10, date('now', 'localtime'))").run(item.id, assignee?.id || req.member.id, item.person || req.member.name);
+          }
+        }
+      }
     });
     replace();
-    res.json({ ok: true });
+    res.json({ ok: true, ...(name === 'tasks' && { progress: progressPayload(req.member.id) }) });
   });
 }
+
+app.get('/api/progress', requireAuth, (req, res) => res.json(progressPayload(req.member.id)));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, database: 'sqlite', version: packageInfo.version }));
 

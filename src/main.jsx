@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  Check, CheckCircle2, ChevronLeft, ChevronRight, Circle, Clock3, CloudSun, Command,
+  Check, CheckCircle2, ChevronLeft, ChevronRight, ChevronUp, Circle, Clock3, CloudSun, Command,
   Delete, Home, ListTodo, LockKeyhole, MapPin, Maximize2, Minus, Minimize2,
   Plus, Printer, Repeat2, RotateCcw, Search, Settings, ShieldCheck, ShoppingBasket,
   Sparkles, Sun, Tag, Trash2, UserPlus, Users, X, Download, GitBranch, Server, Cpu,
@@ -10,6 +10,7 @@ import {
   Info, KeyRound, Eye, Contrast, Smartphone, SlidersHorizontal,
   Power, PowerOff, Lock, AlertTriangle, ExternalLink, Pause, Play, Bluetooth,
   Speaker, Headphones, Keyboard, MousePointer2, MoreHorizontal, LoaderCircle,
+  Trophy, Flame, Award,
 } from 'lucide-react';
 import packageInfo from '../package.json';
 import './styles.css';
@@ -26,7 +27,7 @@ const APP_DEFS = {
 const DEFAULT_PREFERENCES = {
   appearance: 'auto', accent: '#007aff', wallpaper: 'bloom', avatar: '',
   notifications: true, sounds: true, largeText: false, highContrast: false,
-  reduceMotion: false, language: 'Deutsch',
+  reduceMotion: false, language: 'Deutsch', ambientMode: true,
 };
 const loadPreferences = (memberId) => {
   try { return { ...DEFAULT_PREFERENCES, ...JSON.parse(localStorage.getItem(`houseos.preferences.${memberId}`)) }; }
@@ -135,7 +136,13 @@ function useDatabaseCollection(resource, fallback, enabled) {
     valueRef.current = next; setValue(next);
     localStorage.setItem(`houseos.${resource}`, JSON.stringify(next));
     fetch(`/api/${resource}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: next }) })
-      .then(response => setOnline(response.ok)).catch(() => setOnline(false));
+      .then(async response => {
+        setOnline(response.ok);
+        if (response.ok && resource === 'tasks') {
+          const result = await response.json();
+          window.dispatchEvent(new CustomEvent('houseos:progress', { detail: result.progress }));
+        }
+      }).catch(() => setOnline(false));
   };
   return [value, update, online];
 }
@@ -208,14 +215,14 @@ function App() {
   }, []);
   if (booting) return <BootScreen />;
   if (!member) return <LoginScreen users={users} onAuthenticated={setMember} onUsersChanged={refreshUsers} error={authError} setError={setAuthError} />;
-  return <Desktop currentMember={member} onMemberChange={setMember} />;
+  return <Desktop key={member.id} currentMember={member} onMemberChange={setMember} authUsers={users} onUsersChanged={refreshUsers} authError={authError} setAuthError={setAuthError} />;
 }
 
 function BootScreen() {
   return <div className="boot" role="status" aria-label="HouseOS wird gestartet"><div className="boot-orbit"><Home size={42} strokeWidth={1.65} /></div><div className="boot-logo">houseos</div><div className="boot-line"><i /></div><p>HouseOS wird gestartet …</p></div>;
 }
 
-function LoginScreen({ users, onAuthenticated, onUsersChanged, error, setError }) {
+function LoginScreen({ users, onAuthenticated, onUsersChanged, error, setError, embedded = false, onDismiss }) {
   const [selected, setSelected] = useState(null);
   const [pin, setPin] = useState('');
   const [firstPin, setFirstPin] = useState('');
@@ -247,13 +254,14 @@ function LoginScreen({ users, onAuthenticated, onUsersChanged, error, setError }
     finally { setBusy(false); }
   };
   const now = new Date();
-  return <main className="login-screen">
+  return <main className={`login-screen ${embedded ? 'session-login' : ''}`}>
     <div className="login-glow one" /><div className="login-glow two" />
     <div className="login-brand"><span><Home size={18} strokeWidth={1.8} /></span><strong>houseos</strong></div>
     <div className="login-time"><strong>{now.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</strong><span>{now.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })}</span></div>
     <section className={`login-panel ${selected ? 'pin-mode' : 'user-mode'}`}>
+      {embedded && <button type="button" className="session-login-close" aria-label="Zurück zum Ruhebildschirm" onClick={onDismiss}><ChevronLeft size={17} /> Ruhebildschirm</button>}
       {!selected ? <>
-        <div className="login-copy"><small>WILLKOMMEN ZU HAUSE</small><h1>Wer verwendet HouseOS?</h1><p>Wähle dein Profil, um fortzufahren.</p></div>
+        <div className="login-copy"><small>{embedded ? 'HOUSEOS GESPERRT' : 'WILLKOMMEN ZU HAUSE'}</small><h1>Wer verwendet HouseOS?</h1><p>{embedded ? 'Melde dich an oder wechsle das Profil.' : 'Wähle dein Profil, um fortzufahren.'}</p></div>
         <div className="login-users">{users.map(user => <button key={user.id} onClick={() => choose(user)}><ProfileAvatar member={user} className="login-avatar profile-image" /><strong>{user.name}</strong><small>{user.role}</small></button>)}</div>
         {!users.length && <p className="login-error">Der HouseOS-Dienst ist nicht erreichbar.</p>}
       </> : <form onSubmit={submit} className="pin-login">
@@ -299,17 +307,26 @@ const formatTimer = milliseconds => {
   return hours ? `${hours}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}` : `${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
 };
 
-function Desktop({ currentMember, onMemberChange }) {
+const loadWorkspace = memberId => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(`houseos.workspace.${memberId}`));
+    return { activeApps: Array.isArray(saved?.activeApps) && saved.activeApps.length ? saved.activeApps.filter(id => APP_DEFS[id]) : ['today'], minimizedApps: Array.isArray(saved?.minimizedApps) ? saved.minimizedApps.filter(id => APP_DEFS[id]) : [], focused: APP_DEFS[saved?.focused] ? saved.focused : 'today' };
+  } catch { return { activeApps: ['today'], minimizedApps: [], focused: 'today' }; }
+};
+
+function Desktop({ currentMember, onMemberChange, authUsers, onUsersChanged, authError, setAuthError }) {
+  const initialWorkspace = useMemo(() => loadWorkspace(currentMember.id), [currentMember.id]);
   const [time, setTime] = useState(new Date());
-  const [activeApps, setActiveApps] = useState(['today']);
-  const [minimizedApps, setMinimizedApps] = useState([]);
-  const [focused, setFocused] = useState('today');
+  const [activeApps, setActiveApps] = useState(initialWorkspace.activeApps);
+  const [minimizedApps, setMinimizedApps] = useState(initialWorkspace.minimizedApps);
+  const [focused, setFocused] = useState(initialWorkspace.focused);
   const [launcherOpen, setLauncherOpen] = useState(false);
   const [toast, setToast] = useState('');
   const [printType, setPrintType] = useState('daily');
   const [preferences, setPreferences] = useState(() => loadPreferences(currentMember.id));
   const [systemDark, setSystemDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false);
   const [locked, setLocked] = useState(false);
+  const [progress, setProgress] = useState({ members: [], householdPoints: 0, currentMember: null });
   const [restartNotice, setRestartNotice] = useState(null);
   const [timers, setTimers] = useState(loadKitchenTimers);
   const [timerNow, setTimerNow] = useState(Date.now());
@@ -318,7 +335,9 @@ function Desktop({ currentMember, onMemberChange }) {
   const [members, setMembers, membersOnline] = useDatabaseCollection('members', defaultMembers, true);
   const [device, refreshDevice] = useDeviceContext(true);
   const databaseOnline = tasksOnline && shoppingOnline && membersOnline;
+  const refreshProgress = () => fetch('/api/progress', { cache: 'no-store' }).then(response => response.ok ? response.json() : Promise.reject()).then(setProgress).catch(() => {});
   useEffect(() => { const tick = setInterval(() => setTime(new Date()), 1000); return () => clearInterval(tick); }, []);
+  useEffect(() => { localStorage.setItem(`houseos.workspace.${currentMember.id}`, JSON.stringify({ activeApps, minimizedApps, focused })); }, [currentMember.id, activeApps, minimizedApps, focused]);
   useEffect(() => { localStorage.setItem(`houseos.preferences.${currentMember.id}`, JSON.stringify(preferences)); }, [currentMember.id, preferences]);
   useEffect(() => { localStorage.setItem('houseos.kitchenTimers', JSON.stringify(timers)); }, [timers]);
   useEffect(() => {
@@ -341,16 +360,25 @@ function Desktop({ currentMember, onMemberChange }) {
   useEffect(() => { const query = window.matchMedia?.('(prefers-color-scheme: dark)'); if (!query) return; const update = event => setSystemDark(event.matches); query.addEventListener?.('change', update); return () => query.removeEventListener?.('change', update); }, []);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(''), 2600); return () => clearTimeout(timer); }, [toast]);
   useEffect(() => {
+    refreshProgress();
+    const update = event => event.detail ? setProgress(event.detail) : refreshProgress();
+    window.addEventListener('houseos:progress', update);
+    return () => window.removeEventListener('houseos:progress', update);
+  }, []);
+  useEffect(() => {
     const showRestart = event => setRestartNotice(current => current || { title: event.detail?.title || 'Raspberry Pi startet neu', message: event.detail?.message || 'Der Raspberry Pi wird neu gestartet.', targetVersion: event.detail?.version || '' });
     window.addEventListener('houseos:restart', showRestart);
     return () => window.removeEventListener('houseos:restart', showRestart);
   }, []);
   useEffect(() => {
-    let timer;
-    const armLock = () => { clearTimeout(timer); if (!locked) timer = setTimeout(() => setLocked(true), 90_000); };
-    const events = ['pointerdown', 'keydown', 'touchstart']; events.forEach(name => window.addEventListener(name, armLock, { passive: true })); armLock();
-    return () => { clearTimeout(timer); events.forEach(name => window.removeEventListener(name, armLock)); };
-  }, [locked]);
+    let lockTimer;
+    const armIdle = () => {
+      clearTimeout(lockTimer);
+      if (!locked) lockTimer = setTimeout(() => setLocked(true), preferences.ambientMode ? 60_000 : 15 * 60_000);
+    };
+    const events = ['pointerdown', 'keydown', 'touchstart']; events.forEach(name => window.addEventListener(name, armIdle, { passive: true })); armIdle();
+    return () => { clearTimeout(lockTimer); events.forEach(name => window.removeEventListener(name, armIdle)); };
+  }, [locked, preferences.ambientMode]);
   const openApp = (id) => { setActiveApps(apps => [...apps.filter(app => app !== id), id]); setMinimizedApps(apps => apps.filter(app => app !== id)); setFocused(id); setLauncherOpen(false); };
   const openPrint = (type) => { setPrintType(type); openApp('printer'); };
   const focusApp = (id) => { setActiveApps(apps => [...apps.filter(app => app !== id), id]); setFocused(id); };
@@ -372,65 +400,81 @@ function Desktop({ currentMember, onMemberChange }) {
     <section className="welcome-copy"><p>{greeting(time.getHours())}, {currentMember.name}</p><h1>Dein Zuhause ist<br /><em>bereit für den Tag.</em></h1></section>
     <aside className="desktop-icons">{Object.entries(APP_DEFS).map(([id, app]) => <DesktopIcon key={id} app={app} onClick={() => openApp(id)} />)}</aside>
     {launcherOpen && <Launcher onOpen={openApp} onClose={() => setLauncherOpen(false)} currentMember={currentMember} />}
-    <section className="window-layer">{Object.keys(APP_DEFS).filter(id => activeApps.includes(id)).map(id => <Window key={id} id={id} app={APP_DEFS[id]} onClose={() => closeApp(id)} onMinimize={() => minimizeApp(id)} onFocus={() => focusApp(id)} focused={focused === id} minimized={minimizedApps.includes(id)} z={20 + activeApps.indexOf(id)}>
-      {id === 'today' && <Today tasks={tasks} shopping={shopping} onOpen={openApp} onPrint={() => openPrint('daily')} time={time} device={device} member={currentMember} />}
+    <section className="window-layer">{Object.keys(APP_DEFS).filter(id => activeApps.includes(id)).map(id => <Window key={id} id={id} workspaceKey={currentMember.id} app={APP_DEFS[id]} onClose={() => closeApp(id)} onMinimize={() => minimizeApp(id)} onFocus={() => focusApp(id)} focused={focused === id} minimized={minimizedApps.includes(id)} z={20 + activeApps.indexOf(id)}>
+      {id === 'today' && <Today tasks={tasks} shopping={shopping} onOpen={openApp} onPrint={() => openPrint('daily')} time={time} device={device} member={currentMember} progress={progress} />}
       {id === 'timer' && <KitchenTimers timers={timers} now={timerNow} onAdd={addTimer} onPause={pauseTimer} onResume={resumeTimer} onRemove={removeTimer} />}
-      {id === 'tasks' && <Tasks items={tasks} setItems={setTasks} members={members} currentMember={currentMember} />}
+      {id === 'tasks' && <Tasks items={tasks} setItems={setTasks} members={members} currentMember={currentMember} progress={progress} />}
       {id === 'shopping' && <Shopping items={shopping} setItems={setShopping} onPrint={() => openPrint('shopping')} />}
       {id === 'printer' && <PrintCenter tasks={tasks} shopping={shopping} notify={setToast} initialType={printType} device={device} />}
       {id === 'settings' && <SettingsApp member={currentMember} onMemberChange={onMemberChange} preferences={preferences} setPreferences={setPreferences} items={members} setItems={setMembers} tasks={tasks} setTasks={setTasks} notify={setToast} device={device} refreshDevice={refreshDevice} />}
     </Window>)}</section>
     <nav className="dock" aria-label="Hauptnavigation"><button className="dock-home" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }} aria-label="Home-Menü"><Command size={20} /><span className="dock-label">Home</span></button><span className="dock-separator" />{Object.entries(APP_DEFS).map(([id, app]) => { const Icon = app.icon; return <button key={id} className={`dock-app ${focused === id ? 'focused' : ''}`} onClick={() => openApp(id)} style={{ '--app': app.color }} title={app.title} aria-current={focused === id ? 'page' : undefined}><Icon size={21} /><span className="dock-label">{app.title === 'Einstellungen' ? 'Setup' : app.title}</span>{activeApps.includes(id) && <i />}</button>; })}</nav>
     {toast && <div className="toast" role="status" aria-live="polite"><CheckCircle2 size={18} />{toast}</div>}
-    {locked && <LockScreen time={time} onUnlock={() => setLocked(false)} />}
+    {locked && !ringingTimers.length && <LockScreen time={time} device={device} tasks={tasks} progress={progress} users={authUsers} onUsersChanged={onUsersChanged} error={authError} setError={setAuthError} onAuthenticated={nextMember => nextMember.id === currentMember.id ? setLocked(false) : onMemberChange(nextMember)} />}
     {!!ringingTimers.length && <TimerAlarm timers={ringingTimers} onStop={removeTimer} />}
     {restartNotice && <RestartScreen title={restartNotice.title} message={restartNotice.message} targetVersion={restartNotice.targetVersion} />}
   </main>;
 }
 
-function LockScreen({ time, onUnlock }) {
+function AmbientScreen({ time, device, tasks, progress, locked = false }) {
+  const thought = THOUGHTS[time.getDate() % THOUGHTS.length];
+  const upcoming = tasks.filter(task => !task.done).slice(0, 3);
+  const leaders = progress.members.slice(0, 3);
+  return <section className="ambient-screen" aria-label={locked ? 'Ruhe- und Sperrbildschirm' : 'Ambient-Modus'}>
+    <div className="ambient-screen-orb one" /><div className="ambient-screen-orb two" />
+    <header><span><Home size={17} /> houseos</span><small>{locked ? 'HouseOS ist gesperrt' : 'Zum Fortfahren Bildschirm berühren'}</small></header>
+    <div className="ambient-clock"><strong>{time.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</strong><span>{time.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })}</span></div>
+    <div className="ambient-dashboard">
+      <article className="ambient-weather"><CloudSun size={30} /><div><strong>{Number.isFinite(device.weather?.temperature) ? `${Math.round(device.weather.temperature)}°` : '–°'}</strong><span>{device.location} · {device.weather ? weatherText(device.weather.code) : 'Wetter wird geladen'}</span></div></article>
+      <article><header><ListTodo size={18} /><strong>Als Nächstes</strong></header>{upcoming.map(task => <p key={task.id}><i style={{ '--person': progress.members.find(member => member.name === task.person)?.color }} /><span><strong>{task.text}</strong><small>{task.person} · {taskSchedule(task)}</small></span></p>)}{!upcoming.length && <div className="ambient-empty"><CheckCircle2 size={20} /> Für heute ist alles geschafft.</div>}</article>
+      <article><header><Trophy size={18} /><strong>Haushaltspunkte</strong><b>{progress.householdPoints}</b></header>{leaders.map((member, index) => <p key={member.id}><em>{index + 1}</em><span><strong>{member.name}</strong><small>{member.streak ? `${member.streak} Wochen in Serie` : `${member.completedTasks} Aufgaben erledigt`}</small></span><b>{member.points}</b></p>)}</article>
+    </div>
+    <blockquote>„{thought}“</blockquote>
+  </section>;
+}
+
+function LockScreen({ time, device, tasks, progress, users, onAuthenticated, onUsersChanged, error, setError }) {
+  const [availableUsers, setAvailableUsers] = useState(users);
+  const [entering, setEntering] = useState(true);
+  const [revealed, setRevealed] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState(0);
   const dragStart = useRef(null);
-  const dragYRef = useRef(0);
-  const [dragY, setDragY] = useState(0);
-  const startSwipe = event => {
+  const dragOffsetRef = useRef(0);
+  const refresh = async () => {
+    await onUsersChanged();
+    try { const response = await fetch('/api/auth/users', { cache: 'no-store' }); if (response.ok) setAvailableUsers(await response.json()); } catch {}
+  };
+  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    const fallback = window.setTimeout(() => setEntering(false), 550);
+    return () => window.clearTimeout(fallback);
+  }, []);
+  const moveSurface = offset => { dragOffsetRef.current = offset; setDragOffset(offset); };
+  const startDrag = event => {
+    if (entering || revealed) return;
     dragStart.current = event.clientY;
-    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragging(true);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
   };
-  const moveSwipe = event => {
+  const dragSurface = event => {
+    if (dragStart.current === null || revealed) return;
+    moveSurface(Math.max(-window.innerHeight, Math.min(0, event.clientY - dragStart.current)));
+  };
+  const finishDrag = () => {
     if (dragStart.current === null) return;
-    dragYRef.current = Math.min(0, event.clientY - dragStart.current);
-    setDragY(dragYRef.current);
-  };
-  const finishSwipe = () => {
-    const shouldUnlock = dragYRef.current < -80;
+    const shouldReveal = -dragOffsetRef.current > Math.min(150, window.innerHeight * .18);
     dragStart.current = null;
-    if (shouldUnlock) onUnlock();
-    else {
-      dragYRef.current = 0;
-      setDragY(0);
-    }
+    setDragging(false);
+    moveSurface(0);
+    setRevealed(shouldReveal);
   };
-  const cancelSwipe = () => {
-    dragStart.current = null;
-    dragYRef.current = 0;
-    setDragY(0);
-  };
-  return <section
-    className={`lock-screen ${dragStart.current !== null ? 'swiping' : ''}`}
-    style={{ '--swipe-y': `${dragY}px`, '--swipe-opacity': 1 - Math.min(1, Math.abs(dragY) / 180) * .32 }}
-    onPointerDown={startSwipe}
-    onPointerMove={moveSwipe}
-    onPointerUp={finishSwipe}
-    onPointerCancel={cancelSwipe}
-    onKeyDown={event => { if (event.key === 'ArrowUp' || event.key === 'Enter') onUnlock(); }}
-    tabIndex={0}
-    autoFocus
-    aria-label="Zum Entsperren nach oben ziehen"
-  >
-    <div className="lock-orb lock-orb-one" /><div className="lock-orb lock-orb-two" />
-    <header><Lock size={15} /><span>HouseOS ist gesperrt</span></header>
-    <div className="lock-clock"><span>{time.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</span><strong>{time.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' })}</strong></div>
-    <div className="lock-swipe-handle" aria-hidden="true"><i /><span>⌃</span></div>
+  return <section className="session-lock" aria-label="HouseOS ist gesperrt">
+    {!entering && <LoginScreen users={availableUsers} onAuthenticated={onAuthenticated} onUsersChanged={refresh} error={error} setError={setError} embedded onDismiss={() => { setRevealed(false); setError(''); }} />}
+    <div className={`session-lock-surface ${entering ? 'entering' : ''} ${dragging ? 'dragging' : ''} ${revealed ? 'revealed' : ''}`} style={revealed || entering ? undefined : { transform: `translateY(${dragOffset}px)` }} role="button" tabIndex="0" aria-label="Sperrbildschirm nach oben ziehen" onAnimationEnd={() => setEntering(false)} onPointerDown={startDrag} onPointerMove={dragSurface} onPointerUp={finishDrag} onPointerCancel={finishDrag} onKeyDown={event => { if (!entering && event.key === 'ArrowUp') { event.preventDefault(); setRevealed(true); } }}>
+      <AmbientScreen time={time} device={device} tasks={tasks} progress={progress} locked />
+      <div className="ambient-unlock-hint" aria-hidden="true"><i /><span>Zum Anmelden nach oben ziehen</span><ChevronUp size={17} /></div>
+    </div>
   </section>;
 }
 
@@ -465,9 +509,67 @@ function Launcher({ onOpen, onClose, currentMember }) {
   </div>;
 }
 
-function Window({ id, app, children, onClose, onMinimize, onFocus, focused, minimized, z }) {
-  const [pos, setPos] = useState(() => { const offset = Object.keys(APP_DEFS).indexOf(id); return { x: offset * 24, y: offset * 18 }; });
-  const [mode, setMode] = useState('normal'); const [snapTarget, setSnapTarget] = useState(null); const snapTargetRef = useRef(null); const dragging = useRef(null); const Icon = app.icon;
+function usePointerScroll() {
+  const gesture = useRef(null);
+  const suppressClick = useRef(false);
+  const findSurface = target => {
+    let surface = target.closest?.('.settings-detail, .settings-sidebar, .receipt-wrap, .window-content');
+    while (surface && surface.scrollHeight <= surface.clientHeight + 1) surface = surface.parentElement?.closest?.('.settings-detail, .settings-sidebar, .receipt-wrap, .window-content');
+    return surface;
+  };
+  const onPointerDown = event => {
+    if (event.button !== 0 || event.pointerType === 'touch') return;
+    const surface = findSurface(event.target);
+    if (!surface) return;
+    gesture.current = { pointerId: event.pointerId, surface, startX: event.clientX, startY: event.clientY, scrollTop: surface.scrollTop, dragging: false };
+  };
+  const onPointerMove = event => {
+    const current = gesture.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - current.startX; const deltaY = event.clientY - current.startY;
+    if (!current.dragging) {
+      if (Math.abs(deltaY) < 7 || Math.abs(deltaY) <= Math.abs(deltaX)) return;
+      current.dragging = true; suppressClick.current = true;
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      current.surface.classList.add('drag-scrolling');
+    }
+    event.preventDefault();
+    current.surface.scrollTop = current.scrollTop - deltaY;
+  };
+  const finish = event => {
+    const current = gesture.current;
+    if (!current || current.pointerId !== event.pointerId) return;
+    current.surface.classList.remove('drag-scrolling');
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    gesture.current = null;
+    if (current.dragging) setTimeout(() => { suppressClick.current = false; }, 250);
+  };
+  const onClickCapture = event => {
+    if (!suppressClick.current) return;
+    event.preventDefault(); event.stopPropagation(); suppressClick.current = false;
+  };
+  return { onPointerDown, onPointerMove, onPointerUp: finish, onPointerCancel: finish, onClickCapture };
+}
+
+const loadWindowState = (memberId, id) => {
+  const offset = Object.keys(APP_DEFS).indexOf(id); const fallback = { pos: { x: offset * 24, y: offset * 18 }, mode: 'normal' };
+  try {
+    const saved = JSON.parse(localStorage.getItem(`houseos.window.${memberId}.${id}`));
+    const mode = ['normal', 'left', 'right', 'maximized'].includes(saved?.mode) ? saved.mode : fallback.mode;
+    const pos = Number.isFinite(saved?.pos?.x) && Number.isFinite(saved?.pos?.y) ? saved.pos : fallback.pos;
+    return { pos, mode };
+  } catch { return fallback; }
+};
+
+function Window({ id, workspaceKey, app, children, onClose, onMinimize, onFocus, focused, minimized, z }) {
+  const initialState = useMemo(() => loadWindowState(workspaceKey, id), [workspaceKey, id]);
+  const [pos, setPos] = useState(initialState.pos);
+  const [mode, setMode] = useState(initialState.mode); const [snapTarget, setSnapTarget] = useState(null); const snapTargetRef = useRef(null); const dragging = useRef(null); const Icon = app.icon;
+  const pointerScroll = usePointerScroll();
+  useEffect(() => {
+    const timer = setTimeout(() => localStorage.setItem(`houseos.window.${workspaceKey}.${id}`, JSON.stringify({ pos, mode })), 120);
+    return () => clearTimeout(timer);
+  }, [workspaceKey, id, pos, mode]);
   const detectSnapTarget = event => event.clientX <= 46 ? 'left' : event.clientX >= window.innerWidth - 46 ? 'right' : event.clientY <= 58 ? 'maximized' : null;
   const startDrag = event => { if (window.innerWidth < 780 || event.target.closest('.window-controls')) return; let dragPos = pos; if (mode !== 'normal') { const rect = event.currentTarget.closest('.window').getBoundingClientRect(); const normalWidth = Math.min(1020, window.innerWidth - 180); const normalHeight = Math.min(700, window.innerHeight - 130); const layerCenterY = 38 + (window.innerHeight - 38 - 74) / 2; const grabX = Math.max(80, Math.min(200, event.clientX - rect.left)); dragPos = { x: event.clientX - grabX + normalWidth / 2 - window.innerWidth / 2, y: Math.max(46, event.clientY - 25) + normalHeight / 2 - layerCenterY }; setMode('normal'); setPos(dragPos); } dragging.current = { x: event.clientX - dragPos.x, y: event.clientY - dragPos.y }; event.currentTarget.setPointerCapture(event.pointerId); };
   const moveDrag = event => { if (!dragging.current) return; setPos({ x: event.clientX - dragging.current.x, y: event.clientY - dragging.current.y }); const target = detectSnapTarget(event); snapTargetRef.current = target; setSnapTarget(target); };
@@ -477,10 +579,10 @@ function Window({ id, app, children, onClose, onMinimize, onFocus, focused, mini
   const expanded = mode !== 'normal';
   return <>{snapTarget && <div className={`snap-preview snap-${snapTarget}`}><span>{snapTarget === 'left' ? 'Links anordnen' : snapTarget === 'right' ? 'Rechts anordnen' : 'Maximieren'}</span></div>}<article data-app={id} data-window-mode={mode} className={`window mode-${mode} ${focused ? 'focused-window' : 'inactive-window'} ${minimized ? 'minimized' : ''}`} onPointerDown={onFocus} style={{ transform: `translate(${pos.x}px, ${pos.y}px)`, zIndex: z }}>
     <div className="titlebar" onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={finishDrag} onPointerCancel={cancelDrag} onDoubleClick={toggleMaximize}><div className="window-controls" onPointerDown={event => event.stopPropagation()} onDoubleClick={event => event.stopPropagation()}><button className="control-close" onClick={onClose} aria-label="Fenster schließen"><X size={9} /></button><button className="control-minimize" onClick={onMinimize} aria-label="Fenster minimieren"><Minus size={9} /></button><button className="control-zoom" onClick={toggleMaximize} aria-label={expanded ? 'Fenster wiederherstellen' : 'Fenster maximieren'}>{expanded ? <Minimize2 size={8} /> : <Maximize2 size={8} />}</button></div><div className="window-title"><span style={{ '--app': app.color }}><Icon size={16} /></span><strong>{app.title}</strong></div><div className="titlebar-spacer" /></div>
-    <div className="window-content">{children}</div></article></>;
+    <div className="window-content" {...pointerScroll}>{children}</div></article></>;
 }
 
-function Today({ tasks, shopping, onOpen, onPrint, time, device, member }) {
+function Today({ tasks, shopping, onOpen, onPrint, time, device, member, progress }) {
   const openTasks = tasks.filter(task => !task.done); const items = shopping.filter(item => !item.checked);
   const todayLabel = time.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: 'long' }).toUpperCase();
   const thought = useMemo(() => THOUGHTS[Math.floor(Math.random() * THOUGHTS.length)], [todayLabel]);
@@ -489,16 +591,26 @@ function Today({ tasks, shopping, onOpen, onPrint, time, device, member }) {
     <div className="metric-grid"><div className={`weather-card ${weather ? '' : 'weather-pending'}`}><div><CloudSun size={34} /><span>{device.location}</span></div><strong>{Number.isFinite(weather?.temperature) ? `${Math.round(weather.temperature)}°` : '–°'}</strong><p>{weather ? `${weatherText(weather.code)} · ${Math.round(weather.minimum)}–${Math.round(weather.maximum)} °C · gefühlt ${Math.round(weather.apparentTemperature)} °C` : device.status === 'denied' ? 'Standortfreigabe für Wetter erforderlich' : 'Wetter wird geladen …'}</p></div>
       <div className="metric-card"><span className="icon-soft orange"><Clock3 size={20} /></span><div><small>LOKALE ZEIT</small><strong>{time.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</strong><p>{device.timezone}</p></div></div>
       <div className="metric-card"><span className="icon-soft green"><MapPin size={20} /></span><div><small>STANDORT</small><strong>{device.location}</strong><p>{device.status === 'ready' ? 'Vom Gerät ermittelt' : 'Zum Aktualisieren oben tippen'}</p></div></div></div>
+    <ProgressStrip progress={progress} />
     <div className="two-columns"><section className="content-card"><header><div><ListTodo size={19} /><strong>Offene Aufgaben</strong></div><button onClick={() => onOpen('tasks')}>Alle anzeigen <ChevronRight size={15} /></button></header><div className="compact-list">{openTasks.slice(0, 3).map(task => <div key={task.id}><Circle size={17} /><span><strong>{task.text}</strong><small>{task.person} · {taskSchedule(task)}</small></span></div>)}{!openTasks.length && <div className="compact-empty">Alles erledigt.</div>}</div></section>
       <section className="content-card"><header><div><ShoppingBasket size={19} /><strong>Einkaufsliste</strong></div><button onClick={() => onOpen('shopping')}>Öffnen <ChevronRight size={15} /></button></header><div className="shopping-summary"><strong>{items.length}</strong><span>Artikel<br />stehen noch aus</span><div>{items.slice(0, 3).map(item => <i key={item.id}>{item.text.slice(0, 1)}</i>)}</div></div></section></div>
     <div className="thought"><Sparkles size={18} /><span><small>GEDANKE DES TAGES</small>„{thought}“</span></div></div>;
 }
 
-function Tasks({ items, setItems, members, currentMember }) {
+const awardIcon = icon => icon === 'flame' ? Flame : icon === 'trophy' ? Trophy : icon === 'award' ? Award : Sparkles;
+function ProgressStrip({ progress, compact = false }) {
+  const current = progress.currentMember;
+  const latestAward = current?.awards?.at(-1);
+  const AwardIcon = awardIcon(latestAward?.icon);
+  return <section className={`progress-strip ${compact ? 'compact' : ''}`}><div><span className="points-icon"><Trophy size={18} /></span><span><small>DEINE PUNKTE</small><strong>{current?.points || 0}</strong></span></div><div><span className="streak-icon"><Flame size={18} /></span><span><small>WOCHEN-SERIE</small><strong>{current?.streak || 0} {current?.streak === 1 ? 'Woche' : 'Wochen'}</strong></span></div><div className="progress-award"><span><AwardIcon size={18} /></span><span><small>AUSZEICHNUNG</small><strong>{latestAward?.title || 'Noch offen'}</strong></span></div><b>{progress.householdPoints || 0}<small> Punkte gemeinsam</small></b></section>;
+}
+
+function Tasks({ items, setItems, members, currentMember, progress }) {
   const [value, setValue] = useState(''); const [person, setPerson] = useState(currentMember.name); const [dueDate, setDueDate] = useState(localDateValue()); const [time, setTime] = useState(''); const [recurrence, setRecurrence] = useState('none');
   const add = event => { event.preventDefault(); if (!value.trim()) return; setItems([...items, { id: Date.now(), text: value.trim(), done: false, person, dueDate, time, recurrence }]); setValue(''); };
   const toggle = id => setItems(items.map(item => item.id === id ? { ...item, done: !item.done } : item));
   return <div className="app-page list-page"><div className="app-heading"><div><span className="eyebrow">HAUSHALT</span><h2>Aufgaben</h2><p>{items.filter(item => !item.done).length} Aufgaben warten auf euch.</p></div><div className="progress-ring">{items.length ? Math.round(items.filter(item => item.done).length / items.length * 100) : 0}%</div></div>
+    <ProgressStrip progress={progress} compact />
     <form className="add-form task-add-form" onSubmit={add}><div className="task-title-input"><Plus size={18} /><input value={value} onChange={event => setValue(event.target.value)} placeholder="Neue Aufgabe hinzufügen …" /></div><select aria-label="Zuständige Person" value={person} onChange={event => setPerson(event.target.value)}>{members.map(member => <option key={member.id}>{member.name}</option>)}</select><input aria-label="Fälligkeitsdatum" type="date" value={dueDate} onChange={event => setDueDate(event.target.value)} /><input aria-label="Uhrzeit" type="time" value={time} onChange={event => setTime(event.target.value)} /><select aria-label="Wiederholung" value={recurrence} onChange={event => setRecurrence(event.target.value)}><option value="none">Einmalig</option><option value="daily">Täglich</option><option value="weekly">Wöchentlich</option><option value="monthly">Monatlich</option></select><button>Hinzufügen</button></form>
     <div className="full-list">{items.map(item => <div className={item.done ? 'done' : ''} key={item.id}><button className="check" onClick={() => toggle(item.id)}>{item.done && <Check size={14} />}</button><span><strong>{item.text}</strong><small>{item.person} · {taskSchedule(item)}</small></span>{item.recurrence && item.recurrence !== 'none' && <Repeat2 className="row-meta-icon" size={14} />}<button className="delete" onClick={() => setItems(items.filter(candidate => candidate.id !== item.id))}><Trash2 size={16} /></button></div>)}</div></div>;
 }
@@ -583,7 +695,7 @@ function GeneralSettings({ preferences, updatePreference, member, notify, device
     <h3 className="settings-section-title">Standort und Wetter</h3>
     <form className="settings-card city-settings" onSubmit={saveCity}><div className="settings-row icon-row"><i style={{ '--category': '#34c759' }}><MapPin size={15} /></i><span><strong>Wetterstadt</strong><small>{city ? `Wetter für ${device.location}` : 'Leer lassen für automatische Standorterkennung'}</small></span><input value={city} onChange={event => setCity(event.target.value)} placeholder="z. B. Wien" autoComplete="off" disabled={!member.isAdmin || savingCity} /><button className="settings-save" disabled={!member.isAdmin || savingCity}>{savingCity ? 'Prüfe …' : 'Speichern'}</button></div>{!member.isAdmin && <p className="device-hint">Nur der Haushaltsadmin kann die Wetterstadt ändern.</p>}{cityError && <p className="settings-error">{cityError}</p>}</form>
     <h3 className="settings-section-title">HouseOS</h3>
-    <div className="settings-card"><div className="settings-row icon-row"><i style={{ '--category': '#007aff' }}><Languages size={15} /></i><span><strong>Sprache</strong><small>Sprache der Oberfläche</small></span><select value={preferences.language} onChange={event => updatePreference('language', event.target.value)}><option>Deutsch</option><option>English</option></select></div><div className="settings-row icon-row"><i style={{ '--category': '#8e8e93' }}><Info size={15} /></i><span><strong>HouseOS</strong><small>Persönliches Zuhause-Dashboard</small></span><b>Version {packageInfo.version}</b></div><div className="settings-row icon-row"><i style={{ '--category': '#5856d6' }}><KeyRound size={15} /></i><span><strong>PIN & Sicherheit</strong><small>Dein Profil wird beim Verlassen gesperrt</small></span><b>Aktiv</b></div></div>
+    <div className="settings-card"><div className="settings-row icon-row"><i style={{ '--category': '#007aff' }}><Languages size={15} /></i><span><strong>Sprache</strong><small>Sprache der Oberfläche</small></span><select value={preferences.language} onChange={event => updatePreference('language', event.target.value)}><option>Deutsch</option><option>English</option></select></div><SettingSwitch icon={MonitorCog} color="#5e5ce6" title="Ruhe- und Sperrbildschirm" subtitle="Nach einer Minute Informationen anzeigen und Anmeldung verlangen" checked={preferences.ambientMode} onChange={value => updatePreference('ambientMode', value)} /><div className="settings-row icon-row"><i style={{ '--category': '#8e8e93' }}><Info size={15} /></i><span><strong>HouseOS</strong><small>Persönliches Zuhause-Dashboard</small></span><b>Version {packageInfo.version}</b></div><div className="settings-row icon-row"><i style={{ '--category': '#5856d6' }}><KeyRound size={15} /></i><span><strong>PIN & Sicherheit</strong><small>{preferences.ambientMode ? 'Automatische Sperre nach einer Minute' : 'Automatische Sperre nach 15 Minuten'}</small></span><b>Aktiv</b></div></div>
   </section>;
 }
 
