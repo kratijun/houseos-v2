@@ -8,6 +8,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { listPrinters, printHouseReceipt } from './printer.js';
 import { getLatestRelease, validRepository } from './updater.js';
+import { controlBluetoothDevice, getBluetoothState, scanBluetoothDevices, setBluetoothPower } from './bluetooth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -372,6 +373,23 @@ for (const [name, config] of Object.entries(collections)) {
 }
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, database: 'sqlite', version: packageInfo.version }));
+
+app.get('/api/bluetooth', requireAuth, async (_req, res) => res.json(await getBluetoothState()));
+
+app.post('/api/bluetooth/power', requireAdmin, async (req, res) => {
+  try { res.json(await setBluetoothPower(req.body?.powered === true)); }
+  catch (error) { res.status(error?.code === 'UNSUPPORTED' ? 501 : 502).json({ error: error instanceof Error ? error.message : 'Bluetooth konnte nicht geschaltet werden.' }); }
+});
+
+app.post('/api/bluetooth/scan', requireAdmin, async (_req, res) => {
+  try { res.json(await scanBluetoothDevices()); }
+  catch (error) { res.status(error?.code === 'UNSUPPORTED' ? 501 : 502).json({ error: error instanceof Error ? error.message : 'Bluetooth-Suche fehlgeschlagen.' }); }
+});
+
+app.post('/api/bluetooth/devices/:address/:action', requireAdmin, async (req, res) => {
+  try { res.json(await controlBluetoothDevice(req.params.address, req.params.action)); }
+  catch (error) { res.status(['INVALID_ADDRESS','INVALID_ACTION'].includes(error?.code) ? 400 : error?.code === 'UNSUPPORTED' ? 501 : 502).json({ error: error instanceof Error ? error.message : 'Bluetooth-Gerät konnte nicht verwaltet werden.' }); }
+});
 
 app.get('/api/printers', requireAuth, async (_req, res) => res.json(await listPrinters()));
 
