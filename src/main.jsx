@@ -10,7 +10,8 @@ import {
   Info, KeyRound, Eye, Contrast, Smartphone, SlidersHorizontal,
   Power, PowerOff, Lock, AlertTriangle, ExternalLink, Pause, Play, Bluetooth,
   Speaker, Headphones, Keyboard, MousePointer2, MoreHorizontal, LoaderCircle,
-  Trophy, Flame, Award,
+  Trophy, Flame, Award, CalendarDays, Utensils, Heart, Cookie, Gamepad2,
+  BedDouble, Shirt, Star, Gift, Smile,
 } from 'lucide-react';
 import packageInfo from '../package.json';
 import './styles.css';
@@ -20,6 +21,7 @@ const APP_DEFS = {
   timer: { title: 'Timer', icon: Clock3, color: '#ff9500', keywords: 'küche kochen alarm wecker countdown' },
   tasks: { title: 'Aufgaben', icon: ListTodo, color: '#30b67a', keywords: 'todo erledigen termin zeit wiederholung' },
   shopping: { title: 'Einkauf', icon: ShoppingBasket, color: '#ff6259', keywords: 'liste artikel kategorie' },
+  meals: { title: 'Speiseplan', icon: Utensils, color: '#af52de', keywords: 'essen rezepte woche frühstück mittag abend zutaten' },
   printer: { title: 'Print Center', icon: Printer, color: '#667eea', keywords: 'bon drucken vorschau' },
   settings: { title: 'Einstellungen', icon: Settings, color: '#636366', keywords: 'admin benutzer profil pin system update version github' },
 };
@@ -66,9 +68,9 @@ const defaultTasks = [
   { id: 3, text: 'Papiermüll rausbringen', done: false, person: 'Oliver', time: '18:00', dueDate: '', recurrence: 'weekly' },
 ];
 const defaultShopping = [
-  { id: 1, text: 'Hafermilch', checked: false, category: 'Frühstück' },
-  { id: 2, text: 'Tomaten', checked: false, category: 'Gemüse' },
-  { id: 3, text: 'Kaffeebohnen', checked: true, category: 'Vorrat' },
+  { id: 1, text: 'Hafermilch', checked: false, category: 'Frühstück', quantity: '1 Liter' },
+  { id: 2, text: 'Tomaten', checked: false, category: 'Gemüse', quantity: '4 Stück' },
+  { id: 3, text: 'Kaffeebohnen', checked: true, category: 'Vorrat', quantity: '500 g' },
 ];
 
 const THOUGHTS = [
@@ -91,6 +93,30 @@ const THOUGHTS = [
   'Heute zählt, was euch den Alltag ein kleines Stück leichter macht.',
   'Zuhause ist kein Projekt. Es ist ein Gefühl, das wachsen darf.',
 ];
+const PET_MESSAGES = name => [`Hallo ${name}!`, 'Du machst das großartig!', 'Zeit für eine kleine Kuschelpause?', 'Ich passe auf HouseOS auf.', 'High Five! 🐾'];
+const DEFAULT_PET_STATE = { fullness: 78, joy: 82, energy: 74, love: 55, xp: 0, sleeping: false, sleepStarted: null, outfits: [], busyUntil: 0, busyType: '', lastUpdated: Date.now() };
+const PET_OUTFITS = [
+  { id: 'none', label: 'Ohne', emoji: '🧸', level: 1 },
+  { id: 'scarf', label: 'Schal', emoji: '🧣', level: 2 },
+  { id: 'bow', label: 'Masche', emoji: '🎀', points: 15 },
+  { id: 'pajamas', label: 'Pyjama', emoji: '🌙', level: 3 },
+  { id: 'crown', label: 'Krone', emoji: '👑', points: 40 },
+];
+const clampPetValue = value => Math.max(0, Math.min(100, Math.round(value)));
+const petLevel = xp => Math.min(9, Math.floor(Math.max(0, xp || 0) / 45) + 1);
+const agePetState = state => {
+  const now = Date.now(); const elapsedHours = Math.max(0, now - (state.lastUpdated || now)) / 3_600_000;
+  if (elapsedHours < .01) return { ...DEFAULT_PET_STATE, ...state, busyUntil: state.busyUntil > now ? state.busyUntil : 0, busyType: state.busyUntil > now ? state.busyType : '' };
+  return { ...DEFAULT_PET_STATE, ...state, fullness: clampPetValue(state.fullness - elapsedHours * 4), joy: clampPetValue(state.joy - elapsedHours * (state.sleeping ? .4 : 2.5)), energy: clampPetValue(state.energy + elapsedHours * (state.sleeping ? 22 : -2)), love: clampPetValue(state.love - elapsedHours * .6), busyUntil: state.busyUntil > now ? state.busyUntil : 0, busyType: state.busyUntil > now ? state.busyType : '', lastUpdated: now };
+};
+const loadPetState = memberId => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(`houseos.pet.${memberId}`)) || {};
+    const outfits = Array.isArray(saved.outfits) ? saved.outfits : saved.outfit && saved.outfit !== 'none' ? [saved.outfit] : [];
+    return agePetState({ ...DEFAULT_PET_STATE, ...saved, outfits: [...new Set(outfits.filter(id => PET_OUTFITS.some(outfit => outfit.id === id && id !== 'none')))] });
+  }
+  catch { return { ...DEFAULT_PET_STATE }; }
+};
 
 const weatherText = (code) => {
   if (code === 0) return 'Klar';
@@ -306,6 +332,14 @@ const formatTimer = milliseconds => {
   const hours = Math.floor(total / 3600); const minutes = Math.floor(total % 3600 / 60); const seconds = total % 60;
   return hours ? `${hours}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}` : `${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
 };
+const dateValue = date => new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+const weekStartValue = (value = localDateValue()) => {
+  const date = new Date(`${value}T12:00:00`);
+  const weekday = date.getDay() || 7;
+  date.setDate(date.getDate() - weekday + 1);
+  return dateValue(date);
+};
+const shiftDateValue = (value, days) => { const date = new Date(`${value}T12:00:00`); date.setDate(date.getDate() + days); return dateValue(date); };
 
 const loadWorkspace = memberId => {
   try {
@@ -332,9 +366,11 @@ function Desktop({ currentMember, onMemberChange, authUsers, onUsersChanged, aut
   const [timerNow, setTimerNow] = useState(Date.now());
   const [tasks, setTasks, tasksOnline] = useDatabaseCollection('tasks', defaultTasks, true);
   const [shopping, setShopping, shoppingOnline] = useDatabaseCollection('shopping', defaultShopping, true);
+  const [mealPlans, setMealPlans, mealPlansOnline] = useDatabaseCollection('mealplans', [], true);
+  const [savedDishes, setSavedDishes, savedDishesOnline] = useDatabaseCollection('dishes', [], true);
   const [members, setMembers, membersOnline] = useDatabaseCollection('members', defaultMembers, true);
   const [device, refreshDevice] = useDeviceContext(true);
-  const databaseOnline = tasksOnline && shoppingOnline && membersOnline;
+  const databaseOnline = tasksOnline && shoppingOnline && mealPlansOnline && savedDishesOnline && membersOnline;
   const refreshProgress = () => fetch('/api/progress', { cache: 'no-store' }).then(response => response.ok ? response.json() : Promise.reject()).then(setProgress).catch(() => {});
   useEffect(() => { const tick = setInterval(() => setTime(new Date()), 1000); return () => clearInterval(tick); }, []);
   useEffect(() => { localStorage.setItem(`houseos.workspace.${currentMember.id}`, JSON.stringify({ activeApps, minimizedApps, focused })); }, [currentMember.id, activeApps, minimizedApps, focused]);
@@ -399,24 +435,141 @@ function Desktop({ currentMember, onMemberChange, authUsers, onUsersChanged, aut
     </header>
     <section className="welcome-copy"><p>{greeting(time.getHours())}, {currentMember.name}</p><h1>Dein Zuhause ist<br /><em>bereit für den Tag.</em></h1></section>
     <aside className="desktop-icons">{Object.entries(APP_DEFS).map(([id, app]) => <DesktopIcon key={id} app={app} onClick={() => openApp(id)} />)}</aside>
+    <HousePet member={currentMember} householdPoints={progress.householdPoints || 0} />
     {launcherOpen && <Launcher onOpen={openApp} onClose={() => setLauncherOpen(false)} currentMember={currentMember} />}
     <section className="window-layer">{Object.keys(APP_DEFS).filter(id => activeApps.includes(id)).map(id => <Window key={id} id={id} workspaceKey={currentMember.id} app={APP_DEFS[id]} onClose={() => closeApp(id)} onMinimize={() => minimizeApp(id)} onFocus={() => focusApp(id)} focused={focused === id} minimized={minimizedApps.includes(id)} z={20 + activeApps.indexOf(id)}>
-      {id === 'today' && <Today tasks={tasks} shopping={shopping} onOpen={openApp} onPrint={() => openPrint('daily')} time={time} device={device} member={currentMember} progress={progress} />}
+      {id === 'today' && <Today tasks={tasks} shopping={shopping} mealPlans={mealPlans} onOpen={openApp} onPrint={() => openPrint('daily')} time={time} device={device} member={currentMember} progress={progress} />}
       {id === 'timer' && <KitchenTimers timers={timers} now={timerNow} onAdd={addTimer} onPause={pauseTimer} onResume={resumeTimer} onRemove={removeTimer} />}
       {id === 'tasks' && <Tasks items={tasks} setItems={setTasks} members={members} currentMember={currentMember} progress={progress} />}
       {id === 'shopping' && <Shopping items={shopping} setItems={setShopping} onPrint={() => openPrint('shopping')} />}
+      {id === 'meals' && <MealPlanner items={mealPlans} setItems={setMealPlans} savedDishes={savedDishes} setSavedDishes={setSavedDishes} shopping={shopping} setShopping={setShopping} notify={setToast} />}
       {id === 'printer' && <PrintCenter tasks={tasks} shopping={shopping} notify={setToast} initialType={printType} device={device} />}
       {id === 'settings' && <SettingsApp member={currentMember} onMemberChange={onMemberChange} preferences={preferences} setPreferences={setPreferences} items={members} setItems={setMembers} tasks={tasks} setTasks={setTasks} notify={setToast} device={device} refreshDevice={refreshDevice} />}
     </Window>)}</section>
     <nav className="dock" aria-label="Hauptnavigation"><button className="dock-home" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }} aria-label="Home-Menü"><Command size={20} /><span className="dock-label">Home</span></button><span className="dock-separator" />{Object.entries(APP_DEFS).map(([id, app]) => { const Icon = app.icon; return <button key={id} className={`dock-app ${focused === id ? 'focused' : ''}`} onClick={() => openApp(id)} style={{ '--app': app.color }} title={app.title} aria-current={focused === id ? 'page' : undefined}><Icon size={21} /><span className="dock-label">{app.title === 'Einstellungen' ? 'Setup' : app.title}</span>{activeApps.includes(id) && <i />}</button>; })}</nav>
     {toast && <div className="toast" role="status" aria-live="polite"><CheckCircle2 size={18} />{toast}</div>}
-    {locked && !ringingTimers.length && <LockScreen time={time} device={device} tasks={tasks} progress={progress} users={authUsers} onUsersChanged={onUsersChanged} error={authError} setError={setAuthError} onAuthenticated={nextMember => nextMember.id === currentMember.id ? setLocked(false) : onMemberChange(nextMember)} />}
+    {locked && !ringingTimers.length && <LockScreen time={time} device={device} tasks={tasks} mealPlans={mealPlans} progress={progress} users={authUsers} onUsersChanged={onUsersChanged} error={authError} setError={setAuthError} onAuthenticated={nextMember => nextMember.id === currentMember.id ? setLocked(false) : onMemberChange(nextMember)} />}
     {!!ringingTimers.length && <TimerAlarm timers={ringingTimers} onStop={removeTimer} />}
     {restartNotice && <RestartScreen title={restartNotice.title} message={restartNotice.message} targetVersion={restartNotice.targetVersion} />}
   </main>;
 }
 
-function AmbientScreen({ time, device, tasks, progress, locked = false }) {
+function HousePet({ member, householdPoints }) {
+  const [pet, setPet] = useState(() => loadPetState(member.id));
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [reaction, setReaction] = useState({ message: '', action: 'idle', key: 0 });
+  const [petNow, setPetNow] = useState(Date.now());
+  const root = useRef(null); const reactionTimer = useRef(null); const actionTimer = useRef(null); const busyRef = useRef(0);
+  useEffect(() => { const loaded = loadPetState(member.id); busyRef.current = loaded.busyUntil || 0; setPet(loaded); setPetNow(Date.now()); setMenuOpen(false); }, [member.id]);
+  useEffect(() => { localStorage.setItem(`houseos.pet.${member.id}`, JSON.stringify(pet)); }, [member.id, pet]);
+  useEffect(() => {
+    const interval = setInterval(() => setPet(current => agePetState(current)), 60_000);
+    return () => clearInterval(interval);
+  }, []);
+  useEffect(() => {
+    if (!pet.busyUntil) return;
+    const tick = () => {
+      const now = Date.now(); setPetNow(now);
+      if (now >= pet.busyUntil) { busyRef.current = 0; setPet(current => ({ ...current, busyUntil: 0, busyType: '' })); }
+    };
+    const interval = setInterval(tick, 250); tick(); return () => clearInterval(interval);
+  }, [pet.busyUntil]);
+  useEffect(() => {
+    const close = event => { if (!root.current?.contains(event.target)) setMenuOpen(false); };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, []);
+  useEffect(() => () => { clearTimeout(reactionTimer.current); clearTimeout(actionTimer.current); }, []);
+  const level = petLevel(pet.xp);
+  const busy = pet.busyUntil > petNow;
+  const busySeconds = busy ? Math.max(1, Math.ceil((pet.busyUntil - petNow) / 1000)) : 0;
+  const activityLabels = { feed: 'Bärli knabbert seinen Keks', cuddle: 'Bärli genießt die Kuscheleinheit', play: 'Bärli spielt gerade', dress: 'Bärli zieht sich um' };
+  const unlocked = outfit => (!outfit.level || level >= outfit.level) && (!outfit.points || householdPoints >= outfit.points);
+  const react = (message, action) => {
+    clearTimeout(reactionTimer.current); clearTimeout(actionTimer.current);
+    setReaction(current => ({ message, action, key: current.key + 1 }));
+    actionTimer.current = setTimeout(() => setReaction(current => ({ ...current, action: 'idle' })), 900);
+    reactionTimer.current = setTimeout(() => setReaction(current => ({ ...current, message: '' })), 3000);
+  };
+  const perform = action => {
+    if (busyRef.current > Date.now() || pet.busyUntil > Date.now()) return react(`Einen Moment noch – Bärli ist noch ${Math.max(1, Math.ceil((Math.max(busyRef.current, pet.busyUntil) - Date.now()) / 1000))} Sek. beschäftigt.`, pet.busyType || 'hello');
+    if (pet.sleeping && action !== 'sleep') return react('Pssst … ich schlafe gerade. 🌙', 'sleep');
+    const actions = {
+      feed: { duration: 6_000, message: 'Mmmh, lecker! Danke! 🍪', values: { fullness: 24, joy: 4, energy: 3, love: 2, xp: 5 } },
+      cuddle: { duration: 5_000, message: `Kuscheln mit ${member.name}! 💕`, values: { fullness: 0, joy: 14, energy: 2, love: 20, xp: 7 } },
+      play: { duration: 8_000, message: 'Nochmal! Das macht Spaß! ⭐', values: { fullness: -8, joy: 25, energy: -12, love: 5, xp: 10 } },
+    };
+    if (action === 'sleep') {
+      setPet(current => ({ ...agePetState(current), sleeping: !current.sleeping, sleepStarted: current.sleeping ? null : Date.now(), lastUpdated: Date.now() }));
+      react(pet.sleeping ? 'Guten Morgen! Ich bin wieder wach. ☀️' : 'Gute Nacht … bis später. 🌙', pet.sleeping ? 'wake' : 'sleep');
+      return;
+    }
+    const selected = actions[action]; if (!selected) return;
+    const busyUntil = Date.now() + selected.duration; busyRef.current = busyUntil; setPetNow(Date.now());
+    setPet(current => {
+      const aged = agePetState(current); const values = selected.values;
+      return { ...aged, fullness: clampPetValue(aged.fullness + values.fullness), joy: clampPetValue(aged.joy + values.joy), energy: clampPetValue(aged.energy + values.energy), love: clampPetValue(aged.love + values.love), xp: Math.max(0, aged.xp + values.xp), busyUntil, busyType: action, lastUpdated: Date.now() };
+    });
+    react(selected.message, action);
+  };
+  const chooseOutfit = outfit => {
+    if (busyRef.current > Date.now() || pet.busyUntil > Date.now()) return react(`Bärli ist noch ${Math.max(1, Math.ceil((Math.max(busyRef.current, pet.busyUntil) - Date.now()) / 1000))} Sek. beschäftigt.`, pet.busyType || 'dress');
+    if (!unlocked(outfit)) {
+      const requirement = outfit.points ? `${outfit.points} Haushaltspunkte` : `Bärli-Level ${outfit.level}`;
+      react(`Noch gesperrt: ${requirement}. 🎁`, 'no'); return;
+    }
+    const busyUntil = Date.now() + 1_000; busyRef.current = busyUntil; setPetNow(Date.now());
+    setPet(current => {
+      const currentOutfits = Array.isArray(current.outfits) ? current.outfits : [];
+      const outfits = outfit.id === 'none' ? [] : currentOutfits.includes(outfit.id) ? currentOutfits.filter(id => id !== outfit.id) : [...currentOutfits, outfit.id];
+      return { ...current, outfits, busyUntil, busyType: 'dress' };
+    });
+    react(outfit.id === 'none' ? 'Heute ganz natürlich! 🧸' : `${outfit.label} wird an- oder ausgezogen.`, 'dress');
+  };
+  const lowest = Math.min(pet.fullness, pet.joy, pet.energy, pet.love);
+  const mood = pet.sleeping ? 'schläft' : lowest < 22 ? 'braucht dich' : lowest < 45 ? 'ein bisschen müde' : lowest > 85 ? 'überglücklich' : 'zufrieden';
+  const stats = [
+    { id: 'fullness', label: 'Satt', value: pet.fullness, icon: Cookie, color: '#ff9f0a' },
+    { id: 'joy', label: 'Spaß', value: pet.joy, icon: Smile, color: '#af52de' },
+    { id: 'energy', label: 'Energie', value: pet.energy, icon: BedDouble, color: '#5856d6' },
+    { id: 'love', label: 'Liebe', value: pet.love, icon: Heart, color: '#ff2d55' },
+  ];
+  return <aside ref={root} className={`house-pet ${menuOpen ? 'menu-open' : ''} ${pet.sleeping ? 'sleeping' : ''}`} aria-label="HouseOS-Pet Bärli" onClick={event => event.stopPropagation()}>
+    {reaction.message && <span className="house-pet-bubble" role="status" aria-live="polite">{reaction.message}</span>}
+    {menuOpen && <section className="pet-context-menu" role="dialog" aria-label="Bärlis Pflege-Menü">
+      <header><span className="pet-context-avatar">🧸</span><span><strong>Bärli</strong><small>Level {level} · {mood}</small></span><button aria-label="Bärli-Menü schließen" onClick={() => setMenuOpen(false)}><X size={15} /></button></header>
+      {reaction.message && <p className="pet-menu-reaction" role="status">{reaction.message}</p>}
+      {busy && <div className="pet-activity" role="status"><span><LoaderCircle size={13} />{activityLabels[pet.busyType] || 'Bärli ist beschäftigt'}</span><b>{busySeconds} Sek.</b><i><em style={{ width: `${Math.max(4, 100 - busySeconds / ({ feed: 6, cuddle: 5, play: 8, dress: 1 }[pet.busyType] || busySeconds) * 100)}%` }} /></i></div>}
+      <div className="pet-level"><span><Star size={12} /> Freundschaft</span><b>{pet.xp % 45} / 45 XP</b><i><em style={{ width: `${pet.xp % 45 / 45 * 100}%` }} /></i></div>
+      <div className="pet-stats">{stats.map(stat => { const StatIcon = stat.icon; return <div key={stat.id} title={`${stat.label}: ${stat.value}%`}><span><StatIcon size={13} style={{ color: stat.color }} />{stat.label}<b>{stat.value}%</b></span><i><em style={{ width: `${stat.value}%`, background: stat.color }} /></i></div>; })}</div>
+      <div className="pet-actions">
+        <button onClick={() => perform('feed')} disabled={pet.sleeping || busy}><Cookie size={18} /><span><strong>Füttern</strong><small>{busy && pet.busyType === 'feed' ? `Noch ${busySeconds} Sek.` : 'Dauert 6 Sek.'}</small></span></button>
+        <button onClick={() => perform('cuddle')} disabled={pet.sleeping || busy}><Heart size={18} /><span><strong>Kuscheln</strong><small>{busy && pet.busyType === 'cuddle' ? `Noch ${busySeconds} Sek.` : 'Dauert 5 Sek.'}</small></span></button>
+        <button onClick={() => perform('play')} disabled={pet.sleeping || busy}><Gamepad2 size={18} /><span><strong>Spielen</strong><small>{busy && pet.busyType === 'play' ? `Noch ${busySeconds} Sek.` : 'Dauert 8 Sek.'}</small></span></button>
+        <button className={pet.sleeping ? 'wake' : ''} disabled={busy} onClick={() => perform('sleep')}><BedDouble size={18} /><span><strong>{pet.sleeping ? 'Aufwecken' : 'Schlafen'}</strong><small>{pet.sleeping ? 'Guten Morgen' : busy ? 'Bitte warten' : 'Energie tanken'}</small></span></button>
+      </div>
+      <div className="pet-wardrobe"><header><span><Shirt size={14} /> Anziehen</span><small><Gift size={12} /> mehrere kombinierbar</small></header><div>{PET_OUTFITS.map(outfit => { const selected = outfit.id === 'none' ? !pet.outfits?.length : pet.outfits?.includes(outfit.id); return <button key={outfit.id} disabled={busy} className={selected ? 'selected' : ''} onClick={() => chooseOutfit(outfit)} aria-pressed={selected} aria-label={`${outfit.label}${unlocked(outfit) ? '' : ' gesperrt'}`}><span>{outfit.emoji}</span><small>{outfit.label}</small>{!unlocked(outfit) && <Lock size={10} />}</button>; })}</div></div>
+      <p className="pet-task-hint"><Trophy size={12} /> {householdPoints} Haushaltspunkte · Erledigte Aufgaben schalten Extras frei.</p>
+    </section>}
+    <button type="button" className={`pet-touch-target action-${reaction.action} ${busy ? 'busy' : ''}`} onClick={() => { setMenuOpen(value => !value); if (!menuOpen) react(PET_MESSAGES(member.name)[reaction.key % PET_MESSAGES(member.name).length], 'hello'); }} aria-label={menuOpen ? 'Bärli-Menü schließen' : 'Bärli-Menü öffnen'} title="Bärli antippen">
+      <span className="pet-shadow" />
+      <span className={`pet-bear ${(pet.outfits || []).map(id => `outfit-${id}`).join(' ')}`} aria-hidden="true">
+        <i className="pet-ear left" /><i className="pet-ear right" />
+        <i className="pet-body"><b /></i>
+        <i className="pet-arm left" /><i className="pet-arm right" />
+        <i className="pet-leg left" /><i className="pet-leg right" />
+        <i className="pet-head"><b className="pet-eye left" /><b className="pet-eye right" /><b className="pet-muzzle"><em /></b></i>
+        {(pet.outfits || []).filter(id => id !== 'pajamas').map(id => <i className={`pet-accessory ${id}`} key={id} />)}
+        {reaction.action === 'feed' && <i className="pet-effect snack">🍪</i>}{reaction.action === 'cuddle' && <i className="pet-effect hearts">♥</i>}{reaction.action === 'play' && <i className="pet-effect stars">★</i>}
+      </span>
+      {pet.sleeping && <span className="pet-sleep-symbol">Zzz</span>}
+      <span className="pet-name">Bärli · Lv. {level}</span>
+      {lowest < 35 && !pet.sleeping && <span className="pet-needs-dot" />}
+    </button>
+  </aside>;
+}
+
+function AmbientScreen({ time, device, tasks, mealPlans, progress, locked = false }) {
   const thought = THOUGHTS[time.getDate() % THOUGHTS.length];
   const upcoming = tasks.filter(task => !task.done).slice(0, 3);
   const leaders = progress.members.slice(0, 3);
@@ -429,11 +582,12 @@ function AmbientScreen({ time, device, tasks, progress, locked = false }) {
       <article><header><ListTodo size={18} /><strong>Als Nächstes</strong></header>{upcoming.map(task => <p key={task.id}><i style={{ '--person': progress.members.find(member => member.name === task.person)?.color }} /><span><strong>{task.text}</strong><small>{task.person} · {taskSchedule(task)}</small></span></p>)}{!upcoming.length && <div className="ambient-empty"><CheckCircle2 size={20} /> Für heute ist alles geschafft.</div>}</article>
       <article><header><Trophy size={18} /><strong>Haushaltspunkte</strong><b>{progress.householdPoints}</b></header>{leaders.map((member, index) => <p key={member.id}><em>{index + 1}</em><span><strong>{member.name}</strong><small>{member.streak ? `${member.streak} Wochen in Serie` : `${member.completedTasks} Aufgaben erledigt`}</small></span><b>{member.points}</b></p>)}</article>
     </div>
+    <WeeklyMealOverview items={mealPlans} ambient />
     <blockquote>„{thought}“</blockquote>
   </section>;
 }
 
-function LockScreen({ time, device, tasks, progress, users, onAuthenticated, onUsersChanged, error, setError }) {
+function LockScreen({ time, device, tasks, mealPlans, progress, users, onAuthenticated, onUsersChanged, error, setError }) {
   const [availableUsers, setAvailableUsers] = useState(users);
   const [entering, setEntering] = useState(true);
   const [revealed, setRevealed] = useState(false);
@@ -472,7 +626,7 @@ function LockScreen({ time, device, tasks, progress, users, onAuthenticated, onU
   return <section className="session-lock" aria-label="HouseOS ist gesperrt">
     {!entering && <LoginScreen users={availableUsers} onAuthenticated={onAuthenticated} onUsersChanged={refresh} error={error} setError={setError} embedded onDismiss={() => { setRevealed(false); setError(''); }} />}
     <div className={`session-lock-surface ${entering ? 'entering' : ''} ${dragging ? 'dragging' : ''} ${revealed ? 'revealed' : ''}`} style={revealed || entering ? undefined : { transform: `translateY(${dragOffset}px)` }} role="button" tabIndex="0" aria-label="Sperrbildschirm nach oben ziehen" onAnimationEnd={() => setEntering(false)} onPointerDown={startDrag} onPointerMove={dragSurface} onPointerUp={finishDrag} onPointerCancel={finishDrag} onKeyDown={event => { if (!entering && event.key === 'ArrowUp') { event.preventDefault(); setRevealed(true); } }}>
-      <AmbientScreen time={time} device={device} tasks={tasks} progress={progress} locked />
+      <AmbientScreen time={time} device={device} tasks={tasks} mealPlans={mealPlans} progress={progress} locked />
       <div className="ambient-unlock-hint" aria-hidden="true"><i /><span>Zum Anmelden nach oben ziehen</span><ChevronUp size={17} /></div>
     </div>
   </section>;
@@ -582,7 +736,7 @@ function Window({ id, workspaceKey, app, children, onClose, onMinimize, onFocus,
     <div className="window-content" {...pointerScroll}>{children}</div></article></>;
 }
 
-function Today({ tasks, shopping, onOpen, onPrint, time, device, member, progress }) {
+function Today({ tasks, shopping, mealPlans, onOpen, onPrint, time, device, member, progress }) {
   const openTasks = tasks.filter(task => !task.done); const items = shopping.filter(item => !item.checked);
   const todayLabel = time.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: 'long' }).toUpperCase();
   const thought = useMemo(() => THOUGHTS[Math.floor(Math.random() * THOUGHTS.length)], [todayLabel]);
@@ -592,6 +746,7 @@ function Today({ tasks, shopping, onOpen, onPrint, time, device, member, progres
       <div className="metric-card"><span className="icon-soft orange"><Clock3 size={20} /></span><div><small>LOKALE ZEIT</small><strong>{time.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</strong><p>{device.timezone}</p></div></div>
       <div className="metric-card"><span className="icon-soft green"><MapPin size={20} /></span><div><small>STANDORT</small><strong>{device.location}</strong><p>{device.status === 'ready' ? 'Vom Gerät ermittelt' : 'Zum Aktualisieren oben tippen'}</p></div></div></div>
     <ProgressStrip progress={progress} />
+    <WeeklyMealOverview items={mealPlans} onOpen={() => onOpen('meals')} />
     <div className="two-columns"><section className="content-card"><header><div><ListTodo size={19} /><strong>Offene Aufgaben</strong></div><button onClick={() => onOpen('tasks')}>Alle anzeigen <ChevronRight size={15} /></button></header><div className="compact-list">{openTasks.slice(0, 3).map(task => <div key={task.id}><Circle size={17} /><span><strong>{task.text}</strong><small>{task.person} · {taskSchedule(task)}</small></span></div>)}{!openTasks.length && <div className="compact-empty">Alles erledigt.</div>}</div></section>
       <section className="content-card"><header><div><ShoppingBasket size={19} /><strong>Einkaufsliste</strong></div><button onClick={() => onOpen('shopping')}>Öffnen <ChevronRight size={15} /></button></header><div className="shopping-summary"><strong>{items.length}</strong><span>Artikel<br />stehen noch aus</span><div>{items.slice(0, 3).map(item => <i key={item.id}>{item.text.slice(0, 1)}</i>)}</div></div></section></div>
     <div className="thought"><Sparkles size={18} /><span><small>GEDANKE DES TAGES</small>„{thought}“</span></div></div>;
@@ -617,11 +772,83 @@ function Tasks({ items, setItems, members, currentMember, progress }) {
 
 const CATEGORY_SUGGESTIONS = ['Backwaren', 'Drogerie', 'Frühstück', 'Getränke', 'Gemüse', 'Haushalt', 'Kühlregal', 'Obst', 'Tiefkühl', 'Vorrat'];
 function Shopping({ items, setItems, onPrint }) {
-  const [value, setValue] = useState(''); const [category, setCategory] = useState('Sonstiges');
-  const add = event => { event.preventDefault(); if (!value.trim()) return; setItems([...items, { id: Date.now(), text: value.trim(), checked: false, category: category.trim() || 'Sonstiges' }]); setValue(''); };
-  return <div className="app-page list-page"><div className="app-heading"><div><span className="eyebrow">GEMEINSAME LISTE</span><h2>Einkauf</h2><p>Mit frei wählbaren Kategorien organisiert.</p></div><button className="primary" onClick={onPrint}><Printer size={17} /> Liste drucken</button></div>
-    <form className="add-form shopping-add-form" onSubmit={add}><ShoppingBasket size={18} /><input value={value} onChange={event => setValue(event.target.value)} placeholder="Was fehlt noch?" /><div className="category-input"><Tag size={14} /><input list="shopping-categories" value={category} onChange={event => setCategory(event.target.value)} placeholder="Kategorie" /><datalist id="shopping-categories">{CATEGORY_SUGGESTIONS.map(item => <option key={item} value={item} />)}</datalist></div><button>Hinzufügen</button></form>
-    <div className="full-list">{items.map(item => <div className={item.checked ? 'done' : ''} key={item.id}><button className="check" onClick={() => setItems(items.map(candidate => candidate.id === item.id ? { ...candidate, checked: !candidate.checked } : candidate))}>{item.checked && <Check size={14} />}</button><span><strong>{item.text}</strong><small>{item.category}</small></span><button className="delete" onClick={() => setItems(items.filter(candidate => candidate.id !== item.id))}><Trash2 size={16} /></button></div>)}</div></div>;
+  const [value, setValue] = useState(''); const [quantity, setQuantity] = useState('1 Stück'); const [category, setCategory] = useState('Sonstiges');
+  const add = event => { event.preventDefault(); if (!value.trim()) return; setItems([...items, { id: Date.now(), text: value.trim(), checked: false, category: category.trim() || 'Sonstiges', quantity: quantity.trim() || '1 Stück' }]); setValue(''); setQuantity('1 Stück'); };
+  return <div className="app-page list-page"><div className="app-heading"><div><span className="eyebrow">GEMEINSAME LISTE</span><h2>Einkauf</h2><p>Artikel mit Menge und frei wählbaren Kategorien organisieren.</p></div><button className="primary" onClick={onPrint}><Printer size={17} /> Liste drucken</button></div>
+    <form className="add-form shopping-add-form" onSubmit={add}><ShoppingBasket size={18} /><input value={value} onChange={event => setValue(event.target.value)} placeholder="Was fehlt noch?" /><input className="shopping-quantity-input" aria-label="Menge" value={quantity} onChange={event => setQuantity(event.target.value)} placeholder="Menge" /><div className="category-input"><Tag size={14} /><input list="shopping-categories" value={category} onChange={event => setCategory(event.target.value)} placeholder="Kategorie" /><datalist id="shopping-categories">{CATEGORY_SUGGESTIONS.map(item => <option key={item} value={item} />)}</datalist></div><button>Hinzufügen</button></form>
+    <div className="full-list shopping-list">{items.map(item => <div className={item.checked ? 'done' : ''} key={item.id}><button className="check" onClick={() => setItems(items.map(candidate => candidate.id === item.id ? { ...candidate, checked: !candidate.checked } : candidate))}>{item.checked && <Check size={14} />}</button><span><strong>{item.text}</strong><small>{item.category}</small></span><input className="shopping-row-quantity" aria-label={`Menge für ${item.text}`} value={item.quantity || '1 Stück'} onChange={event => setItems(items.map(candidate => candidate.id === item.id ? { ...candidate, quantity: event.target.value } : candidate))} /><button className="delete" onClick={() => setItems(items.filter(candidate => candidate.id !== item.id))}><Trash2 size={16} /></button></div>)}</div></div>;
+}
+
+const MEAL_TYPES = [
+  { id: 'breakfast', label: 'Frühstück', icon: Sun },
+  { id: 'lunch', label: 'Mittagessen', icon: Utensils },
+  { id: 'dinner', label: 'Abendessen', icon: Moon },
+];
+function WeeklyMealOverview({ items = [], onOpen, ambient = false }) {
+  const weekStart = weekStartValue();
+  const days = Array.from({ length: 7 }, (_, index) => shiftDateValue(weekStart, index));
+  const weekEnd = days.at(-1);
+  const range = `${new Date(`${weekStart}T12:00:00`).toLocaleDateString('de-DE', { day: '2-digit', month: 'short' })} – ${new Date(`${weekEnd}T12:00:00`).toLocaleDateString('de-DE', { day: '2-digit', month: 'short' })}`;
+  return <section className={`weekly-meal-overview ${ambient ? 'ambient-weekly-meals' : ''}`}><header><div><Utensils size={17} /><span><strong>Speiseplan dieser Woche</strong><small>{range}</small></span></div>{onOpen && <button onClick={onOpen}>Plan öffnen <ChevronRight size={14} /></button>}</header><div className="weekly-meal-scroll"><div className="weekly-meal-grid">{days.map(date => {
+    const day = new Date(`${date}T12:00:00`);
+    return <article className={date === localDateValue() ? 'today' : ''} key={date}><header><span>{day.toLocaleDateString('de-DE', { weekday: 'short' })}</span><b>{day.getDate()}</b></header>{MEAL_TYPES.map(type => {
+      const meal = items.find(item => item.date === date && item.mealType === type.id);
+      return <p className={meal ? 'planned' : ''} key={type.id} title={`${type.label}: ${meal?.name || 'Noch frei'}`}><i className={type.id} /><span>{meal?.name || (ambient ? '–' : 'Noch frei')}</span></p>;
+    })}</article>;
+  })}</div></div></section>;
+}
+function MealPlanner({ items, setItems, savedDishes, setSavedDishes, shopping, setShopping, notify }) {
+  const [weekStart, setWeekStart] = useState(() => weekStartValue());
+  const [editor, setEditor] = useState(null);
+  const days = Array.from({ length: 7 }, (_, index) => shiftDateValue(weekStart, index));
+  const openEditor = (date, mealType, meal = null) => {
+    const savedDish = meal ? savedDishes.find(dish => dish.name.toLocaleLowerCase('de-DE') === meal.name.toLocaleLowerCase('de-DE')) : null;
+    setEditor({ id: meal?.id || null, savedDishId: savedDish?.id || '', date, mealType, name: meal?.name || '', ingredients: meal?.ingredients?.length ? meal.ingredients.map(ingredient => ({ ...ingredient })) : [{ name: '', quantity: '1 Stück' }] });
+  };
+  const updateIngredient = (index, key, value) => setEditor(current => ({ ...current, ingredients: current.ingredients.map((ingredient, ingredientIndex) => ingredientIndex === index ? { ...ingredient, [key]: value } : ingredient) }));
+  const selectSavedDish = value => {
+    const dish = savedDishes.find(candidate => String(candidate.id) === String(value));
+    if (!dish) return setEditor(current => ({ ...current, savedDishId: '', name: '', ingredients: [{ name: '', quantity: '1 Stück' }] }));
+    setEditor(current => ({ ...current, savedDishId: dish.id, name: dish.name, ingredients: dish.ingredients.length ? dish.ingredients.map(ingredient => ({ ...ingredient })) : [{ name: '', quantity: '1 Stück' }] }));
+  };
+  const saveMeal = event => {
+    event.preventDefault();
+    if (!editor.name.trim()) return;
+    const ingredients = editor.ingredients.map(ingredient => ({ name: ingredient.name.trim(), quantity: ingredient.quantity.trim() || '1 Stück' })).filter(ingredient => ingredient.name);
+    const meal = { id: editor.id || Date.now(), date: editor.date, mealType: editor.mealType, name: editor.name.trim(), ingredients };
+    const knownDish = savedDishes.find(dish => dish.id === editor.savedDishId || dish.name.toLocaleLowerCase('de-DE') === meal.name.toLocaleLowerCase('de-DE'));
+    const savedDish = { id: knownDish?.id || Date.now(), name: meal.name, ingredients };
+    setItems([...items.filter(item => item.id !== editor.id && !(item.date === editor.date && item.mealType === editor.mealType)), meal]);
+    setSavedDishes([...savedDishes.filter(dish => dish.id !== savedDish.id), savedDish]);
+    setEditor(null);
+    notify(`${meal.name} wurde gespeichert und eingeplant`);
+  };
+  const deleteMeal = () => { if (!editor?.id) return; setItems(items.filter(item => item.id !== editor.id)); setEditor(null); notify('Gericht aus dem Speiseplan entfernt'); };
+  const addIngredients = meal => {
+    if (!meal.ingredients?.length) return notify('Für dieses Gericht sind noch keine Zutaten eingetragen');
+    const next = shopping.map(item => ({ ...item }));
+    let added = 0;
+    for (const ingredient of meal.ingredients) {
+      const existingIndex = next.findIndex(item => item.text.trim().toLocaleLowerCase('de-DE') === ingredient.name.trim().toLocaleLowerCase('de-DE'));
+      if (existingIndex >= 0) next[existingIndex] = { ...next[existingIndex], checked: false, quantity: ingredient.quantity || next[existingIndex].quantity || '1 Stück' };
+      else { next.push({ id: Date.now() + added, text: ingredient.name, quantity: ingredient.quantity || '1 Stück', category: 'Speiseplan', checked: false }); added += 1; }
+    }
+    setShopping(next);
+    notify(added ? `${added} Zutaten auf die Einkaufsliste gesetzt` : 'Zutaten auf der Einkaufsliste aktualisiert');
+  };
+  const weekEnd = days.at(-1);
+  const weekTitle = `${new Date(`${weekStart}T12:00:00`).toLocaleDateString('de-DE', { day: '2-digit', month: 'short' })} – ${new Date(`${weekEnd}T12:00:00`).toLocaleDateString('de-DE', { day: '2-digit', month: 'short', year: 'numeric' })}`;
+  return <div className="app-page meal-planner-page"><div className="app-heading meal-planner-heading"><div><span className="eyebrow">WOCHENPLAN</span><h2>Speiseplan</h2><p>Frühstück, Mittag- und Abendessen gemeinsam planen.</p></div><div className="meal-week-controls"><button aria-label="Vorherige Woche" onClick={() => setWeekStart(shiftDateValue(weekStart, -7))}><ChevronLeft size={18} /></button><button className="meal-today-button" onClick={() => setWeekStart(weekStartValue())}>Diese Woche</button><button aria-label="Nächste Woche" onClick={() => setWeekStart(shiftDateValue(weekStart, 7))}><ChevronRight size={18} /></button></div></div>
+    <div className="meal-week-title"><CalendarDays size={18} /><strong>{weekTitle}</strong></div>
+    <div className="meal-week-scroll"><div className="meal-week-grid">{days.map(date => {
+      const day = new Date(`${date}T12:00:00`); const isToday = date === localDateValue();
+      return <section className={`meal-day ${isToday ? 'today' : ''}`} key={date}><header><span>{day.toLocaleDateString('de-DE', { weekday: 'short' })}</span><strong>{day.getDate()}</strong><small>{day.toLocaleDateString('de-DE', { month: 'short' })}</small></header>{MEAL_TYPES.map(type => {
+        const meal = items.find(item => item.date === date && item.mealType === type.id); const TypeIcon = type.icon;
+        return meal ? <article className={`meal-slot filled ${type.id}`} key={type.id}><div><span><TypeIcon size={14} />{type.label}</span><button aria-label={`${meal.name} bearbeiten`} onClick={() => openEditor(date, type.id, meal)}><MoreHorizontal size={16} /></button></div><strong>{meal.name}</strong><small>{meal.ingredients?.length || 0} Zutaten</small><button className="meal-shopping-button" onClick={() => addIngredients(meal)}><ShoppingBasket size={13} /> Auf Liste</button></article> : <button className={`meal-slot empty ${type.id}`} key={type.id} onClick={() => openEditor(date, type.id)}><span><TypeIcon size={14} />{type.label}</span><Plus size={17} /><small>Gericht planen</small></button>;
+      })}</section>;
+    })}</div></div>
+    {editor && <div className="meal-editor-backdrop" onPointerDown={event => event.target === event.currentTarget && setEditor(null)}><form className="meal-editor" onSubmit={saveMeal}><header><div><span className="eyebrow">GERICHT PLANEN</span><h3>{MEAL_TYPES.find(type => type.id === editor.mealType)?.label} · {new Date(`${editor.date}T12:00:00`).toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: 'long' })}</h3></div><button type="button" aria-label="Editor schließen" onClick={() => setEditor(null)}><X size={18} /></button></header><label className="meal-saved-select"><span>Gespeicherte Speise auswählen</span><select aria-label="Gespeicherte Speise auswählen" value={editor.savedDishId} onChange={event => selectSavedDish(event.target.value)}><option value="">Neue Speise erstellen</option>{savedDishes.map(dish => <option key={dish.id} value={dish.id}>{dish.name}</option>)}</select><small>{savedDishes.length ? `${savedDishes.length} Speisen gespeichert` : 'Noch keine Speise gespeichert'}</small></label><label><span>Name des Gerichts</span><input value={editor.name} onChange={event => setEditor(current => ({ ...current, savedDishId: '', name: event.target.value }))} placeholder="z. B. Gemüse-Curry" /></label><div className="meal-ingredients-head"><span><strong>Zutaten</strong><small>Mit der benötigten Menge</small></span><button type="button" data-preserve-keyboard onClick={() => setEditor(current => ({ ...current, ingredients: [...current.ingredients, { name: '', quantity: '1 Stück' }] }))}><Plus size={14} /> Zutat</button></div><div className="meal-ingredient-list">{editor.ingredients.map((ingredient, index) => <div key={index}><input aria-label={`Zutat ${index + 1}`} value={ingredient.name} onChange={event => updateIngredient(index, 'name', event.target.value)} placeholder="Zutat" /><input aria-label={`Menge für Zutat ${index + 1}`} value={ingredient.quantity} onChange={event => updateIngredient(index, 'quantity', event.target.value)} placeholder="Menge" /><button type="button" data-preserve-keyboard aria-label={`Zutat ${index + 1} entfernen`} onClick={() => setEditor(current => ({ ...current, ingredients: current.ingredients.filter((_, ingredientIndex) => ingredientIndex !== index) }))}><Trash2 size={15} /></button></div>)}</div><footer>{editor.id && <button type="button" className="meal-delete-button" onClick={deleteMeal}><Trash2 size={15} /> Löschen</button>}<button type="button" onClick={() => setEditor(null)}>Abbrechen</button><button className="primary" disabled={!editor.name.trim()}><Check size={15} /> Speichern</button></footer></form></div>}
+  </div>;
 }
 
 function SettingsApp({ member, onMemberChange, preferences, setPreferences, items, setItems, tasks, setTasks, notify, device, refreshDevice }) {
@@ -839,7 +1066,7 @@ function PrintCenter({ tasks, shopping, notify, initialType, device }) {
   useEffect(() => { loadPrinterData(); }, []);
   const sendPrint = async (dryRun = false) => { if (!dryRun && !settings.printerName) return notify('Bitte zuerst einen Drucker auswählen'); setBusy(true); setPrintStatus(dryRun ? 'Druckdaten werden geprüft …' : 'Bon wird direkt gesendet …'); try { const response = await fetch('/api/print', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type, dryRun, context }) }); const result = await response.json(); setPrintStatus(result.message); notify(result.message); } catch { setPrintStatus('Der lokale Druckdienst ist nicht erreichbar'); notify('Direktdruck nicht verfügbar'); } finally { setBusy(false); } };
   return <div className="app-page print-page"><div className="app-heading"><div><span className="eyebrow">HOUSEOS DIRECT PRINT</span><h2>Print Center</h2><p>Vorschau und Bondaten verwenden dieselben aktuellen Gerätedaten.</p></div><span className={`printer-status ${settings.printerName ? '' : 'not-ready'}`}><i /> {settings.printerName ? 'Direktdruck bereit' : 'Drucker wählen'}</span></div><div className="print-layout"><section className="print-options"><h3>Was möchtest du drucken?</h3>{[['daily','Tagesübersicht',Sun],['shopping','Einkaufsliste',ShoppingBasket],['tasks','Aufgabenliste',ListTodo]].map(([id,label,Icon]) => <button className={type === id ? 'selected' : ''} key={id} onClick={() => setType(id)}><span><Icon size={19} /></span><strong>{label}</strong>{type === id && <CheckCircle2 size={18} />}</button>)}<div className="printer-setup"><div className="setup-heading"><strong>Drucker</strong><button onClick={loadPrinterData}><RotateCcw size={13} /></button></div><select value={settings.printerName} onChange={event => saveSettings({ ...settings, printerName: event.target.value })}><option value="">Drucker auswählen …</option>{printers.map(printer => <option key={printer.name} value={printer.name}>{printer.name}{printer.isDefault ? ' · Standard' : ''}{printer.offline ? ' · Offline' : ''}</option>)}</select><strong className="setup-label">Papierbreite</strong><div className="paper-switch">{[58,80].map(width => <button key={width} className={settings.paperWidth === width ? 'selected' : ''} onClick={() => saveSettings({ ...settings, paperWidth: width })}>{width} mm</button>)}</div><label className="cut-toggle"><input type="checkbox" checked={settings.autoCut} onChange={event => saveSettings({ ...settings, autoCut: event.target.checked })} /><span>Bon automatisch abschneiden</span></label></div><button className="print-button" disabled={busy || !settings.printerName} onClick={() => sendPrint(false)}><Printer size={18} /> {busy ? 'Wird gesendet …' : `Direkt auf ${settings.paperWidth} mm drucken`}</button><button className="reset-button" disabled={busy} onClick={() => sendPrint(true)}><CheckCircle2 size={15} /> Druckdaten testen</button>{printStatus && <p className="print-feedback">{printStatus}</p>}</section>
-    <section className="receipt-wrap"><span className="preview-label">VORSCHAU · {settings.paperWidth} MM</span><div className={`receipt paper-${settings.paperWidth}`} id="receipt"><div className="receipt-logo">⌂ HOUSEOS</div><p>{type === 'daily' ? 'TAGESÜBERSICHT' : type === 'shopping' ? 'EINKAUFSLISTE' : 'AUFGABENLISTE'}</p><div className="receipt-rule" /><small>{date}</small>{type === 'daily' && <><h4>STANDORT</h4><p>{context.location}</p><h4>WETTER</h4><p>{context.weatherText}</p><h4>AUFGABEN</h4>{tasks.filter(task => !task.done).map(task => <p key={task.id}>[ ] {task.text}<small> · {taskSchedule(task)}</small></p>)}<h4>EINKAUF</h4>{shopping.filter(item => !item.checked).map(item => <p key={item.id}>[ ] {item.text}</p>)}</>}{type === 'shopping' && shopping.filter(item => !item.checked).map(item => <p key={item.id}>[ ] {item.text} <small>({item.category})</small></p>)}{type === 'tasks' && tasks.filter(task => !task.done).map(task => <p key={task.id}>[ ] {task.text}<small> · {task.person} · {taskSchedule(task)}</small></p>)}<div className="receipt-rule" /><p className="receipt-center">Zuhause läuft alles.<br />houseos.local</p></div></section></div></div>;
+    <section className="receipt-wrap"><span className="preview-label">VORSCHAU · {settings.paperWidth} MM</span><div className={`receipt paper-${settings.paperWidth}`} id="receipt"><div className="receipt-logo">⌂ HOUSEOS</div><p>{type === 'daily' ? 'TAGESÜBERSICHT' : type === 'shopping' ? 'EINKAUFSLISTE' : 'AUFGABENLISTE'}</p><div className="receipt-rule" /><small>{date}</small>{type === 'daily' && <><h4>STANDORT</h4><p>{context.location}</p><h4>WETTER</h4><p>{context.weatherText}</p><h4>AUFGABEN</h4>{tasks.filter(task => !task.done).map(task => <p key={task.id}>[ ] {task.text}<small> · {taskSchedule(task)}</small></p>)}<h4>EINKAUF</h4>{shopping.filter(item => !item.checked).map(item => <p key={item.id}>[ ] {item.quantity || '1 Stück'} {item.text}</p>)}</>}{type === 'shopping' && shopping.filter(item => !item.checked).map(item => <p key={item.id}>[ ] {item.quantity || '1 Stück'} {item.text} <small>({item.category})</small></p>)}{type === 'tasks' && tasks.filter(task => !task.done).map(task => <p key={task.id}>[ ] {task.text}<small> · {task.person} · {taskSchedule(task)}</small></p>)}<div className="receipt-rule" /><p className="receipt-center">Zuhause läuft alles.<br />houseos.local</p></div></section></div></div>;
 }
 
 const KEYBOARD_ROWS = [
@@ -853,19 +1080,33 @@ const NUMERIC_KEYBOARD_ROWS = [['1','2','3'],['4','5','6'],['7','8','9'],['-','0
 
 function OnScreenKeyboard() {
   const [target, setTarget] = useState(null); const [shift, setShift] = useState(false);
+  const preserveFocus = useRef(false);
   useEffect(() => {
     const editable = element => element instanceof HTMLTextAreaElement || (element instanceof HTMLInputElement && !['button','checkbox','color','date','datetime-local','file','hidden','month','radio','range','reset','submit','time','week'].includes(element.type) && !element.readOnly && !element.disabled && !element.dataset.noVirtualKeyboard);
     const openFor = element => {
       if (!editable(element)) return;
       setTarget(element); setShift(false);
-      setTimeout(() => element?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }), 80);
+      if (element.closest?.('.meal-editor')) {
+        const desktop = element.closest('.desktop');
+        const desktopScroll = desktop?.scrollTop || 0;
+        requestAnimationFrame(() => desktop?.scrollTo?.({ top: desktopScroll, behavior: 'instant' }));
+      } else setTimeout(() => element?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }), 80);
     };
     const focusIn = event => openFor(event.target);
     const pointerDown = event => {
+      if (event.target.closest?.('[data-preserve-keyboard]')) {
+        preserveFocus.current = true;
+        setTimeout(() => { preserveFocus.current = false; }, 0);
+        return;
+      }
       if (!editable(event.target)) return;
+      if (event.target.closest?.('.meal-editor') && document.activeElement !== event.target) {
+        event.preventDefault();
+        event.target.focus({ preventScroll: true });
+      }
       openFor(event.target);
     };
-    const focusOut = event => { if (!event.relatedTarget?.closest?.('.screen-keyboard')) setTimeout(() => { if (!editable(document.activeElement)) setTarget(null); }, 0); };
+    const focusOut = event => { if (!preserveFocus.current && !event.relatedTarget?.closest?.('.screen-keyboard, [data-preserve-keyboard]')) setTimeout(() => { if (!document.activeElement?.closest?.('[data-preserve-keyboard]') && !editable(document.activeElement)) setTarget(null); }, 0); };
     document.addEventListener('pointerdown', pointerDown, true); document.addEventListener('focusin', focusIn); document.addEventListener('focusout', focusOut);
     return () => { document.removeEventListener('pointerdown', pointerDown, true); document.removeEventListener('focusin', focusIn); document.removeEventListener('focusout', focusOut); };
   }, []);

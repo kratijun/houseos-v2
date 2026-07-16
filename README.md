@@ -77,7 +77,9 @@ Für Direktdruck auf dem Raspberry Pi muss CUPS einschließlich der Befehle `lp`
 - **Heute:** Wetter, Termin, offene Aufgaben und Tagesübersicht
 - **Aufgaben:** Aufgaben anlegen, Personen zuweisen, abhaken und löschen
 - **Haushaltspunkte:** 10 Punkte pro erledigter Aufgabe, persönliche Wochenserien und Auszeichnungen
-- **Einkauf:** Gemeinsame Einkaufsliste verwalten
+- **Einkauf:** Gemeinsame Einkaufsliste mit frei editierbaren Mengen und Kategorien verwalten
+- **Speiseplan:** Wochenweise Frühstück, Mittag- und Abendessen samt Zutaten planen und fehlende Zutaten direkt auf die Einkaufsliste setzen
+- **Bärli:** Antippbares HouseOS-Tamagotchi mit Bedürfnissen, Aktionszeiten, Leveln und kombinierbarer Kleidung
 - **Print Center:** Tages-, Einkaufs- und Aufgabenbons als 58-/80-mm-Vorschau und Direktdruck
 - **Mitglieder:** Haushaltsmitglieder anlegen, bearbeiten und entfernen
 

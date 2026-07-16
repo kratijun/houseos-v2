@@ -52,6 +52,20 @@ db.exec(`
     category TEXT NOT NULL DEFAULT 'Sonstiges',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS meal_plans (
+    id INTEGER PRIMARY KEY,
+    date TEXT NOT NULL,
+    meal_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    ingredients TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS dishes (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    ingredients TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
   CREATE TABLE IF NOT EXISTS print_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     printer_name TEXT NOT NULL DEFAULT '',
@@ -88,6 +102,7 @@ const ensureColumn = (table, column, definition) => {
 ensureColumn('members', 'pin_hash', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('tasks', 'due_date', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('tasks', 'recurrence', "TEXT NOT NULL DEFAULT 'none'");
+ensureColumn('shopping', 'quantity', "TEXT NOT NULL DEFAULT '1 Stück'");
 
 const seed = db.transaction(() => {
   if (!db.prepare('SELECT COUNT(*) AS count FROM members').get().count) {
@@ -102,10 +117,10 @@ const seed = db.transaction(() => {
     insert.run(3, 'Papiermüll rausbringen', 0, 'Oliver', '18:00');
   }
   if (!db.prepare('SELECT COUNT(*) AS count FROM shopping').get().count) {
-    const insert = db.prepare('INSERT INTO shopping (id, text, checked, category) VALUES (?, ?, ?, ?)');
-    insert.run(1, 'Hafermilch', 0, 'Frühstück');
-    insert.run(2, 'Tomaten', 0, 'Gemüse');
-    insert.run(3, 'Kaffeebohnen', 1, 'Vorrat');
+    const insert = db.prepare('INSERT INTO shopping (id, text, checked, category, quantity) VALUES (?, ?, ?, ?, ?)');
+    insert.run(1, 'Hafermilch', 0, 'Frühstück', '1 Liter');
+    insert.run(2, 'Tomaten', 0, 'Gemüse', '4 Stück');
+    insert.run(3, 'Kaffeebohnen', 1, 'Vorrat', '500 g');
   }
 });
 seed();
@@ -353,9 +368,38 @@ const collections = {
     normalize: (item) => ({ id: Number(item.id), text: String(item.text || '').trim(), done: item.done ? 1 : 0, person: String(item.person || ''), time: String(item.time || ''), dueDate: String(item.dueDate || ''), recurrence: ['none', 'daily', 'weekly', 'monthly'].includes(item.recurrence) ? item.recurrence : 'none' }),
   },
   shopping: {
-    select: 'SELECT id, text, checked, category FROM shopping ORDER BY created_at ASC',
-    insert: db.prepare('INSERT INTO shopping (id, text, checked, category) VALUES (@id, @text, @checked, @category)'),
-    normalize: (item) => ({ id: Number(item.id), text: String(item.text || '').trim(), checked: item.checked ? 1 : 0, category: String(item.category || 'Sonstiges') }),
+    select: 'SELECT id, text, checked, category, quantity FROM shopping ORDER BY created_at ASC',
+    insert: db.prepare('INSERT INTO shopping (id, text, checked, category, quantity) VALUES (@id, @text, @checked, @category, @quantity)'),
+    normalize: (item) => ({ id: Number(item.id), text: String(item.text || '').trim(), checked: item.checked ? 1 : 0, category: String(item.category || 'Sonstiges'), quantity: String(item.quantity || '1 Stück').trim() }),
+  },
+  mealplans: {
+    table: 'meal_plans',
+    select: "SELECT id, date, meal_type AS mealType, name, ingredients FROM meal_plans ORDER BY date ASC, CASE meal_type WHEN 'breakfast' THEN 1 WHEN 'lunch' THEN 2 ELSE 3 END",
+    insert: db.prepare('INSERT INTO meal_plans (id, date, meal_type, name, ingredients) VALUES (@id, @date, @mealType, @name, @ingredients)'),
+    normalize: (item) => ({
+      id: Number(item.id),
+      date: /^\d{4}-\d{2}-\d{2}$/.test(String(item.date || '')) ? String(item.date) : '',
+      mealType: ['breakfast', 'lunch', 'dinner'].includes(item.mealType) ? item.mealType : 'lunch',
+      name: String(item.name || '').trim(),
+      ingredients: JSON.stringify((Array.isArray(item.ingredients) ? item.ingredients : []).map(ingredient => ({ name: String(ingredient?.name || '').trim(), quantity: String(ingredient?.quantity || '1 Stück').trim() })).filter(ingredient => ingredient.name).slice(0, 40)),
+    }),
+    deserialize: (row) => {
+      try { return { ...row, ingredients: JSON.parse(row.ingredients || '[]') }; }
+      catch { return { ...row, ingredients: [] }; }
+    },
+  },
+  dishes: {
+    select: 'SELECT id, name, ingredients FROM dishes ORDER BY name COLLATE NOCASE ASC',
+    insert: db.prepare('INSERT INTO dishes (id, name, ingredients) VALUES (@id, @name, @ingredients)'),
+    normalize: (item) => ({
+      id: Number(item.id),
+      name: String(item.name || '').trim(),
+      ingredients: JSON.stringify((Array.isArray(item.ingredients) ? item.ingredients : []).map(ingredient => ({ name: String(ingredient?.name || '').trim(), quantity: String(ingredient?.quantity || '1 Stück').trim() })).filter(ingredient => ingredient.name).slice(0, 40)),
+    }),
+    deserialize: (row) => {
+      try { return { ...row, ingredients: JSON.parse(row.ingredients || '[]') }; }
+      catch { return { ...row, ingredients: [] }; }
+    },
   },
 };
 
@@ -403,7 +447,7 @@ const progressPayload = (currentMemberId) => {
 
 for (const [name, config] of Object.entries(collections)) {
   app.get(`/api/${name}`, requireAuth, (_req, res) => {
-    const rows = db.prepare(config.select).all().map((row) => ({ ...row, ...(name === 'members' && { isAdmin: Boolean(row.isAdmin) }), ...(name === 'tasks' && { done: Boolean(row.done) }), ...(name === 'shopping' && { checked: Boolean(row.checked) }) }));
+    const rows = db.prepare(config.select).all().map((row) => config.deserialize ? config.deserialize(row) : ({ ...row, ...(name === 'members' && { isAdmin: Boolean(row.isAdmin) }), ...(name === 'tasks' && { done: Boolean(row.done) }), ...(name === 'shopping' && { checked: Boolean(row.checked) }) }));
     res.json(rows);
   });
 
@@ -415,7 +459,7 @@ for (const [name, config] of Object.entries(collections)) {
     const replace = db.transaction(() => {
       const pinHashes = name === 'members' ? new Map(db.prepare('SELECT id, pin_hash AS pinHash FROM members').all().map(member => [member.id, member.pinHash])) : null;
       const previousTasks = name === 'tasks' ? new Map(db.prepare('SELECT id, done FROM tasks').all().map(task => [task.id, Boolean(task.done)])) : null;
-      db.prepare(`DELETE FROM ${name}`).run();
+      db.prepare(`DELETE FROM ${config.table || name}`).run();
       for (const item of items) config.insert.run(name === 'members' ? { ...item, pinHash: pinHashes.get(item.id) || '' } : item);
       if (name === 'tasks') {
         const validIds = new Set(items.map(item => item.id));

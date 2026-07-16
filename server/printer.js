@@ -61,9 +61,9 @@ export function buildHouseReceipt({ type, paperWidth, autoCut, tasks, shopping, 
       lines.push(...wrap(`[ ] ${task.text} - ${task.person}${schedule ? ` - ${schedule}` : ''}`, width));
     }
     lines.push('', 'EINKAUF');
-    for (const item of shopping.filter(item => !item.checked)) lines.push(...wrap(`[ ] ${item.text}`, width));
+    for (const item of shopping.filter(item => !item.checked)) lines.push(...wrap(`[ ] ${item.quantity || '1 Stück'} ${item.text}`, width));
   } else if (type === 'shopping') {
-    for (const item of shopping.filter(item => !item.checked)) lines.push(...wrap(`[ ] ${item.text} (${item.category})`, width));
+    for (const item of shopping.filter(item => !item.checked)) lines.push(...wrap(`[ ] ${item.quantity || '1 Stück'} ${item.text} (${item.category})`, width));
   } else {
     for (const task of tasks.filter(item => !item.done)) {
       const schedule = [task.dueDate, task.time].filter(Boolean).join(' ');
