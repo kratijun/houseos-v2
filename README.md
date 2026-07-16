@@ -99,6 +99,12 @@ Das Print Center erkennt unter Windows installierte Drucker und auf dem Raspberr
 
 Der Direktdruck setzt voraus, dass HouseOS auf demselben Windows-Rechner wie der ESC/POS-kompatible Bondrucker läuft. Der Drucker muss in Windows installiert sein.
 
+## Bluetooth und Alexa
+
+Auf dem Raspberry Pi können Bluetooth-Geräte direkt unter **Einstellungen → Bluetooth** gesucht, gekoppelt, verbunden und wieder entfernt werden. Die Geräteverwaltung ist Haushaltsadmins vorbehalten. Die automatische Pi-Einrichtung installiert dafür BlueZ, aktiviert den Bluetooth-Systemdienst und nimmt den HouseOS-Benutzer in die Gruppe `bluetooth` auf.
+
+Um einen Echo als Lautsprecher zu verwenden, zuerst „Alexa, Bluetooth koppeln“ sagen und anschließend den erscheinenden Echo in HouseOS mit **Verbinden** auswählen. HouseOS vertraut dem Gerät nach dem Koppeln, sodass es später ohne erneute Freigabe verbunden werden kann. Die eigentliche Musikwiedergabe und Auswahl des Bluetooth-Audioausgangs werden in einem folgenden Schritt ergänzt.
+
 ## Produktionsbetrieb
 
 ```bash

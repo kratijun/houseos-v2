@@ -23,7 +23,8 @@ if ! command -v node >/dev/null || [[ "$(node -p 'Number(process.versions.node.s
 fi
 
 apt-get update
-apt-get install -y chromium cups curl rsync util-linux
+apt-get install -y bluez chromium cups curl rsync util-linux
+usermod -a -G bluetooth "${HOUSEOS_USER}"
 install -d -o "${HOUSEOS_USER}" -g "${HOUSEOS_USER}" /opt/houseos /var/lib/houseos /var/tmp/houseos-update
 rsync -a --delete --exclude node_modules --exclude data --exclude .git "${SOURCE_DIR}/" /opt/houseos/
 cd /opt/houseos
@@ -57,6 +58,6 @@ bash /opt/houseos/deploy/optimize-kiosk-start.sh "${HOUSEOS_USER}"
 if command -v raspi-config >/dev/null; then
   raspi-config nonint do_boot_behaviour B4
 fi
-systemctl enable --now cups.service houseos.service houseos-kiosk.service
+systemctl enable --now bluetooth.service cups.service houseos.service houseos-kiosk.service
 
 echo "HouseOS ist eingerichtet. Nach 'sudo reboot' startet der Pi direkt im Kioskmodus."

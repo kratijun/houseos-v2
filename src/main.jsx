@@ -8,7 +8,8 @@ import {
   HardDrive, RefreshCw, MonitorCog,
   UserRound, Palette, Bell, Accessibility, Camera, Moon, Languages, Volume2,
   Info, KeyRound, Eye, Contrast, Smartphone, SlidersHorizontal,
-  Power, PowerOff, Lock, AlertTriangle, ExternalLink, Pause, Play,
+  Power, PowerOff, Lock, AlertTriangle, ExternalLink, Pause, Play, Bluetooth,
+  Speaker, Headphones, Keyboard, MousePointer2, MoreHorizontal, LoaderCircle,
 } from 'lucide-react';
 import packageInfo from '../package.json';
 import './styles.css';
@@ -515,7 +516,7 @@ function SettingsApp({ member, onMemberChange, preferences, setPreferences, item
   const [section, setSection] = useState('profile'); const [profileName, setProfileName] = useState(member.name); const [saving, setSaving] = useState(false); const [error, setError] = useState(''); const fileInput = useRef(null);
   const groups = [
     { label: 'PERSÖNLICH', items: [['profile','Profil',UserRound,'#8e8e93'],['appearance','Darstellung',Palette,'#007aff'],['notifications','Mitteilungen',Bell,'#ff3b30'],['accessibility','Bedienungshilfen',Accessibility,'#007aff']] },
-    { label: 'ALLGEMEIN', items: [['general','Allgemein',SlidersHorizontal,'#8e8e93']] },
+    { label: 'ALLGEMEIN', items: [['general','Allgemein',SlidersHorizontal,'#8e8e93'],['bluetooth','Bluetooth',Bluetooth,'#007aff']] },
     ...(member.isAdmin ? [{ label: 'HOUSEOS ADMIN', items: [['users','Benutzer',Users,'#34c759'],['system','System',Server,'#5856d6'],['updates','Updates',Download,'#007aff']] }] : []),
   ];
   const updatePreference = (key, value) => setPreferences(current => ({ ...current, [key]: value }));
@@ -538,6 +539,7 @@ function SettingsApp({ member, onMemberChange, preferences, setPreferences, item
       {section === 'notifications' && <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Mitteilungen" description="Lege fest, wie HouseOS dich informiert." /><div className="settings-card"><SettingSwitch icon={Bell} color="#ff3b30" title="Mitteilungen erlauben" subtitle="Hinweise zu Aufgaben und gemeinsamen Listen" checked={preferences.notifications} onChange={value => updatePreference('notifications', value)} /><SettingSwitch icon={Volume2} color="#ff9500" title="Töne" subtitle="Bei wichtigen Hinweisen einen Ton abspielen" checked={preferences.sounds} onChange={value => updatePreference('sounds', value)} /></div></section>}
       {section === 'accessibility' && <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Bedienungshilfen" description="Passe Lesbarkeit und Bewegungen an deine Bedürfnisse an." /><div className="settings-card"><SettingSwitch icon={Eye} color="#007aff" title="Größerer Text" subtitle="Die gesamte HouseOS-Oberfläche deutlich vergrößern" checked={preferences.largeText} onChange={value => updatePreference('largeText', value)} /><SettingSwitch icon={Contrast} color="#5856d6" title="Mehr Kontrast" subtitle="Trennlinien und Flächen deutlicher anzeigen" checked={preferences.highContrast} onChange={value => updatePreference('highContrast', value)} /><SettingSwitch icon={Accessibility} color="#34c759" title="Bewegung reduzieren" subtitle="Animationen und Übergänge minimieren" checked={preferences.reduceMotion} onChange={value => updatePreference('reduceMotion', value)} /></div></section>}
       {section === 'general' && <GeneralSettings preferences={preferences} updatePreference={updatePreference} member={member} notify={notify} device={device} refreshDevice={refreshDevice} />}
+      {section === 'bluetooth' && <BluetoothSettings member={member} notify={notify} />}
       {section === 'users' && member.isAdmin && <section className="admin-settings-panel"><Members embedded items={items} setItems={setItems} tasks={tasks} setTasks={setTasks} notify={notify} /></section>}
       {['system','updates'].includes(section) && member.isAdmin && <section className="admin-settings-panel"><SystemPanel section={section} notify={notify} /></section>}
     </main>
@@ -582,6 +584,75 @@ function GeneralSettings({ preferences, updatePreference, member, notify, device
     <form className="settings-card city-settings" onSubmit={saveCity}><div className="settings-row icon-row"><i style={{ '--category': '#34c759' }}><MapPin size={15} /></i><span><strong>Wetterstadt</strong><small>{city ? `Wetter für ${device.location}` : 'Leer lassen für automatische Standorterkennung'}</small></span><input value={city} onChange={event => setCity(event.target.value)} placeholder="z. B. Wien" autoComplete="off" disabled={!member.isAdmin || savingCity} /><button className="settings-save" disabled={!member.isAdmin || savingCity}>{savingCity ? 'Prüfe …' : 'Speichern'}</button></div>{!member.isAdmin && <p className="device-hint">Nur der Haushaltsadmin kann die Wetterstadt ändern.</p>}{cityError && <p className="settings-error">{cityError}</p>}</form>
     <h3 className="settings-section-title">HouseOS</h3>
     <div className="settings-card"><div className="settings-row icon-row"><i style={{ '--category': '#007aff' }}><Languages size={15} /></i><span><strong>Sprache</strong><small>Sprache der Oberfläche</small></span><select value={preferences.language} onChange={event => updatePreference('language', event.target.value)}><option>Deutsch</option><option>English</option></select></div><div className="settings-row icon-row"><i style={{ '--category': '#8e8e93' }}><Info size={15} /></i><span><strong>HouseOS</strong><small>Persönliches Zuhause-Dashboard</small></span><b>Version {packageInfo.version}</b></div><div className="settings-row icon-row"><i style={{ '--category': '#5856d6' }}><KeyRound size={15} /></i><span><strong>PIN & Sicherheit</strong><small>Dein Profil wird beim Verlassen gesperrt</small></span><b>Aktiv</b></div></div>
+  </section>;
+}
+
+const bluetoothDeviceIcon = device => {
+  const type = `${device.icon || ''} ${device.name || ''}`.toLowerCase();
+  if (/head|airpod|buds|kopfhörer/.test(type)) return Headphones;
+  if (/keyboard|tastatur/.test(type)) return Keyboard;
+  if (/mouse|maus/.test(type)) return MousePointer2;
+  if (/phone|tablet|iphone|ipad/.test(type)) return Smartphone;
+  return Speaker;
+};
+
+function BluetoothSettings({ member, notify }) {
+  const [state, setState] = useState({ available: true, powered: false, discovering: false, adapter: null, devices: [], message: '' });
+  const [busy, setBusy] = useState('load'); const [error, setError] = useState(''); const [details, setDetails] = useState('');
+  const request = async (url, options) => {
+    const response = await fetch(url, { cache: 'no-store', ...options, headers: options?.body ? { 'Content-Type': 'application/json', ...options?.headers } : options?.headers });
+    const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Bluetooth-Aktion fehlgeschlagen.');
+    setState(result); return result;
+  };
+  const load = async () => {
+    try { setError(''); return await request('/api/bluetooth'); }
+    catch (loadError) { setError(loadError.message); return null; }
+    finally { setBusy(''); }
+  };
+  const scan = async (quiet = false) => {
+    if (!member.isAdmin) return;
+    setBusy('scan'); if (!quiet) setError('');
+    try { await request('/api/bluetooth/scan', { method: 'POST' }); }
+    catch (scanError) { setError(scanError.message); }
+    finally { setBusy(''); }
+  };
+  useEffect(() => { let active = true; load().then(result => { if (active && result?.available && result.powered && member.isAdmin) scan(true); }); return () => { active = false; }; }, []);
+  useEffect(() => {
+    if (!state.powered || busy === 'scan') return;
+    const timer = setInterval(() => load(), 5000); return () => clearInterval(timer);
+  }, [state.powered, busy]);
+  const setPower = async powered => {
+    setBusy('power'); setError('');
+    try { const result = await request('/api/bluetooth/power', { method: 'POST', body: JSON.stringify({ powered }) }); notify(`Bluetooth ${result.powered ? 'aktiviert' : 'deaktiviert'}`); if (result.powered) await scan(true); }
+    catch (powerError) { setError(powerError.message); }
+    finally { setBusy(''); }
+  };
+  const control = async (device, action) => {
+    setBusy(device.address); setError('');
+    try {
+      await request(`/api/bluetooth/devices/${encodeURIComponent(device.address)}/${action}`, { method: 'POST' });
+      const messages = { pair: `${device.name} wurde gekoppelt`, connect: `${device.name} ist verbunden`, disconnect: `${device.name} wurde getrennt`, remove: `${device.name} wurde ignoriert` };
+      notify(messages[action]); if (action === 'remove') setDetails('');
+    } catch (deviceError) { setError(deviceError.message); }
+    finally { setBusy(''); }
+  };
+  const paired = state.devices.filter(device => device.paired || device.bonded || device.trusted);
+  const nearby = state.devices.filter(device => !device.paired && !device.bonded && !device.trusted);
+  const deviceList = (devices, empty) => <div className="bluetooth-list">{devices.map(device => {
+    const Icon = bluetoothDeviceIcon(device); const deviceBusy = busy === device.address; const expanded = details === device.address;
+    return <article className={`bluetooth-device ${device.connected ? 'connected' : ''} ${expanded ? 'expanded' : ''}`} key={device.address}>
+      <div className="bluetooth-device-main"><i><Icon size={22} /></i><span><strong>{device.name}</strong><small>{device.connected ? 'Verbunden' : device.paired || device.trusted ? 'Nicht verbunden' : 'Nicht gekoppelt'}</small></span>
+        <button className="bluetooth-connect" disabled={!member.isAdmin || deviceBusy} onClick={() => control(device, device.connected ? 'disconnect' : device.paired || device.trusted ? 'connect' : 'pair')}>{deviceBusy ? <LoaderCircle className="spin" size={14} /> : device.connected ? 'Trennen' : 'Verbinden'}</button>
+        <button className="bluetooth-more" onClick={() => setDetails(expanded ? '' : device.address)} aria-label={`Details zu ${device.name}`}><MoreHorizontal size={17} /></button></div>
+      {expanded && <div className="bluetooth-device-details"><span><small>Adresse</small><strong>{device.address}</strong></span><span><small>Typ</small><strong>{device.icon || 'Audiogerät'}</strong></span>{(device.paired || device.trusted) && <button disabled={!member.isAdmin || deviceBusy} onClick={() => control(device, 'remove')}>Dieses Gerät ignorieren …</button>}</div>}
+    </article>;
+  })}{!devices.length && <div className="bluetooth-empty">{empty}</div>}</div>;
+  return <section className="preference-panel bluetooth-panel"><header className="bluetooth-header"><div><span className="settings-kicker">VERBINDUNGEN</span><h2>Bluetooth</h2><p>{state.powered ? `${state.adapter?.name || 'HouseOS'} ist als „${state.adapter?.name || 'Raspberry Pi'}“ sichtbar.` : 'Verbinde HouseOS mit Lautsprechern und anderem Zubehör.'}</p></div><label className="bluetooth-power"><input type="checkbox" checked={state.powered} disabled={!member.isAdmin || busy === 'power' || !state.available} onChange={event => setPower(event.target.checked)} /><em /></label></header>
+    {!state.available ? <div className="bluetooth-unavailable"><Bluetooth size={28} /><strong>Bluetooth nicht verfügbar</strong><p>{state.message || 'Auf diesem Gerät wurde kein Bluetooth-Adapter gefunden.'}</p></div> : <>
+      {state.powered && <div className="bluetooth-scan-status"><span className={busy === 'scan' ? 'scanning' : ''}><Bluetooth size={14} />{busy === 'scan' ? 'Geräte werden gesucht …' : 'Bluetooth ist eingeschaltet'}</span><button disabled={!member.isAdmin || busy === 'scan'} onClick={() => scan()}>{busy === 'scan' ? <LoaderCircle className="spin" size={13} /> : <RefreshCw size={13} />} Erneut suchen</button></div>}
+      {state.powered ? <><h3 className="settings-section-title">Meine Geräte</h3>{deviceList(paired, 'Noch keine gekoppelten Geräte')}<h3 className="settings-section-title">Geräte in der Nähe</h3>{deviceList(nearby, busy === 'scan' ? 'Suche läuft …' : 'Keine weiteren Geräte gefunden')}</> : <div className="bluetooth-off"><span><Bluetooth size={30} /></span><h3>Bluetooth ist ausgeschaltet</h3><p>Aktiviere Bluetooth, um eine Alexa oder anderes Zubehör in der Nähe zu finden.</p></div>}
+    </>}
+    {!member.isAdmin && <p className="device-hint">Nur der Haushaltsadmin kann Bluetooth-Verbindungen ändern.</p>}{error && <p className="settings-error">{error}</p>}
   </section>;
 }
 

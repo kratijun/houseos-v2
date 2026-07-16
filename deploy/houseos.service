@@ -1,6 +1,7 @@
 [Unit]
 Description=HouseOS household operating system
-After=local-fs.target
+After=local-fs.target bluetooth.service
+Wants=bluetooth.service
 
 [Service]
 Type=simple
