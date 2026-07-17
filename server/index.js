@@ -6,6 +6,7 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import webpush from 'web-push';
 import { listPrinters, printHouseReceipt } from './printer.js';
 import { getLatestRelease, validRepository } from './updater.js';
 import { controlBluetoothDevice, getBluetoothState, scanBluetoothDevices, setBluetoothPower } from './bluetooth.js';
@@ -93,6 +94,13 @@ db.exec(`
     completed_on TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    subscription TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 const ensureColumn = (table, column, definition) => {
@@ -130,6 +138,24 @@ db.prepare("INSERT OR IGNORE INTO device_settings (id, weather_city) VALUES (1, 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
 
+const vapidPath = path.join(dataDir, 'push-vapid.json');
+const loadVapidKeys = () => {
+  const environmentKeys = {
+    publicKey: String(process.env.HOUSEOS_VAPID_PUBLIC_KEY || ''),
+    privateKey: String(process.env.HOUSEOS_VAPID_PRIVATE_KEY || ''),
+  };
+  if (environmentKeys.publicKey && environmentKeys.privateKey) return environmentKeys;
+  try {
+    const stored = JSON.parse(fs.readFileSync(vapidPath, 'utf8'));
+    if (stored.publicKey && stored.privateKey) return stored;
+  } catch {}
+  const generated = webpush.generateVAPIDKeys();
+  fs.writeFileSync(vapidPath, JSON.stringify(generated, null, 2), { mode: 0o600 });
+  return generated;
+};
+const vapidKeys = loadVapidKeys();
+webpush.setVapidDetails(process.env.HOUSEOS_VAPID_SUBJECT || 'mailto:houseos@localhost', vapidKeys.publicKey, vapidKeys.privateKey);
+
 const sessions = new Map();
 const hashPin = (pin, salt = randomBytes(16).toString('hex')) => `${salt}:${scryptSync(pin, salt, 32).toString('hex')}`;
 const validPin = (pin, stored) => {
@@ -153,6 +179,102 @@ const requireAuth = (req, res, next) => {
   next();
 };
 const requireAdmin = (req, res, next) => requireAuth(req, res, () => req.member.isAdmin ? next() : res.status(403).json({ error: 'Administratorrechte erforderlich.' }));
+
+const pushRows = (memberId = null) => db.prepare(`
+  SELECT endpoint, member_id AS memberId, subscription
+  FROM push_subscriptions
+  ${memberId ? 'WHERE member_id = ?' : ''}
+`).all(...(memberId ? [memberId] : []));
+
+const sendPush = async (payload, { excludeMemberId = null, memberName = '', endpoint = '' } = {}) => {
+  const target = memberName ? db.prepare('SELECT id FROM members WHERE lower(name) = lower(?)').get(memberName) : null;
+  const subscriptions = pushRows(target?.id || null).filter(row => row.memberId !== excludeMemberId && (!endpoint || row.endpoint === endpoint));
+  await Promise.allSettled(subscriptions.map(async row => {
+    try {
+      await webpush.sendNotification(JSON.parse(row.subscription), JSON.stringify(payload), { TTL: 300, urgency: 'normal', topic: payload.tag?.slice(0, 32) });
+    } catch (error) {
+      if ([404, 410].includes(error?.statusCode)) db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ?').run(row.endpoint);
+      else console.error('Push-Mitteilung fehlgeschlagen:', error?.message || error);
+    }
+  }));
+};
+
+const queueCollectionPush = (name, previousItems, items, actor) => {
+  const previous = new Map(previousItems.map(item => [Number(item.id), item]));
+  const current = new Map(items.map(item => [Number(item.id), item]));
+  const added = items.filter(item => !previous.has(Number(item.id)));
+  const removed = previousItems.filter(item => !current.has(Number(item.id)));
+  const changed = items.filter(item => {
+    const oldItem = previous.get(Number(item.id));
+    return oldItem && JSON.stringify(oldItem) !== JSON.stringify(item);
+  });
+  const options = { excludeMemberId: actor.id };
+
+  if (name === 'tasks') {
+    for (const task of added) {
+      void sendPush({ title: task.person ? `Neue Aufgabe für ${task.person}` : 'Neue Aufgabe', body: `${actor.name}: ${task.text}`, tag: `task-${task.id}`, url: '/?app=tasks', icon: '/icons/houseos-192.png' }, { ...options, memberName: task.person });
+    }
+    for (const task of changed) {
+      const oldTask = previous.get(Number(task.id));
+      if (!oldTask.done && Boolean(task.done)) {
+        void sendPush({ title: 'Aufgabe erledigt', body: `${actor.name} hat „${task.text}“ erledigt.`, tag: `task-${task.id}`, url: '/?app=tasks', icon: '/icons/houseos-192.png' }, options);
+      } else if (oldTask.person !== task.person && task.person) {
+        void sendPush({ title: `Aufgabe für ${task.person}`, body: `${actor.name} hat dir „${task.text}“ zugewiesen.`, tag: `task-${task.id}`, url: '/?app=tasks', icon: '/icons/houseos-192.png' }, { ...options, memberName: task.person });
+      } else if (oldTask.text !== task.text || oldTask.time !== task.time || oldTask.dueDate !== task.dueDate || oldTask.recurrence !== task.recurrence) {
+        void sendPush({ title: 'Aufgabe geändert', body: `${actor.name} hat „${task.text}“ aktualisiert.`, tag: `task-${task.id}`, url: '/?app=tasks', icon: '/icons/houseos-192.png' }, { ...options, memberName: task.person });
+      }
+    }
+  }
+
+  if (name === 'shopping' && added.length) {
+    const body = added.length === 1 ? `${actor.name} hat ${added[0].quantity || ''} ${added[0].text} hinzugefügt.` : `${actor.name} hat ${added.length} neue Artikel hinzugefügt.`;
+    void sendPush({ title: 'Einkaufsliste aktualisiert', body, tag: 'shopping', url: '/?app=shopping', icon: '/icons/houseos-192.png' }, options);
+  }
+
+  if (name === 'mealplans') {
+    const mealType = { breakfast: 'Frühstück', lunch: 'Mittagessen', dinner: 'Abendessen' };
+    for (const meal of added) {
+      void sendPush({ title: 'Neues Essen eingeplant', body: `${actor.name}: ${meal.name} als ${mealType[meal.mealType] || 'Essen'}.`, tag: `meal-${meal.id}`, url: '/?app=meals', icon: '/icons/houseos-192.png' }, options);
+    }
+    for (const meal of changed) {
+      void sendPush({ title: 'Speiseplan geändert', body: `${actor.name} hat ${meal.name} aktualisiert.`, tag: `meal-${meal.id}`, url: '/?app=meals', icon: '/icons/houseos-192.png' }, options);
+    }
+    if (removed.length) {
+      const body = removed.length === 1 ? `${actor.name} hat ${removed[0].name} aus dem Plan entfernt.` : `${actor.name} hat ${removed.length} Einträge entfernt.`;
+      void sendPush({ title: 'Speiseplan geändert', body, tag: 'meal-plan', url: '/?app=meals', icon: '/icons/houseos-192.png' }, options);
+    }
+  }
+};
+
+app.get('/api/push/status', requireAuth, (req, res) => {
+  res.json({ supported: true, publicKey: vapidKeys.publicKey, subscriptions: pushRows(req.member.id).length });
+});
+
+app.post('/api/push/subscribe', requireAuth, (req, res) => {
+  const subscription = req.body?.subscription;
+  const endpoint = String(subscription?.endpoint || '');
+  if (!endpoint.startsWith('https://') || !subscription?.keys?.p256dh || !subscription?.keys?.auth) return res.status(400).json({ error: 'Ungültiges Push-Abonnement.' });
+  db.prepare(`
+    INSERT INTO push_subscriptions (endpoint, member_id, subscription)
+    VALUES (?, ?, ?)
+    ON CONFLICT(endpoint) DO UPDATE SET member_id = excluded.member_id, subscription = excluded.subscription, updated_at = CURRENT_TIMESTAMP
+  `).run(endpoint, req.member.id, JSON.stringify(subscription));
+  res.json({ ok: true });
+});
+
+app.delete('/api/push/subscribe', requireAuth, (req, res) => {
+  const endpoint = String(req.body?.endpoint || '');
+  if (endpoint) db.prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND member_id = ?').run(endpoint, req.member.id);
+  res.json({ ok: true });
+});
+
+app.post('/api/push/test', requireAuth, async (req, res) => {
+  const endpoint = String(req.body?.endpoint || '');
+  const subscription = endpoint && db.prepare('SELECT endpoint FROM push_subscriptions WHERE endpoint = ? AND member_id = ?').get(endpoint, req.member.id);
+  if (!subscription) return res.status(404).json({ error: 'Dieses Gerät ist nicht für Mitteilungen registriert.' });
+  await sendPush({ title: 'HouseOS Mitteilungen', body: 'Benachrichtigungen funktionieren auf diesem Gerät.', tag: 'houseos-test', url: '/?app=today', icon: '/icons/houseos-192.png' }, { memberName: req.member.name, endpoint });
+  res.json({ ok: true });
+});
 
 app.get('/api/auth/users', (_req, res) => {
   const users = db.prepare("SELECT id, name, role, color, is_admin AS isAdmin, pin_hash <> '' AS hasPin FROM members ORDER BY is_admin DESC, created_at ASC").all();
@@ -445,15 +567,17 @@ const progressPayload = (currentMemberId) => {
   };
 };
 
+const collectionPayload = (name, config) => db.prepare(config.select).all().map((row) => config.deserialize ? config.deserialize(row) : ({ ...row, ...(name === 'members' && { isAdmin: Boolean(row.isAdmin) }), ...(name === 'tasks' && { done: Boolean(row.done) }), ...(name === 'shopping' && { checked: Boolean(row.checked) }) }));
+
 for (const [name, config] of Object.entries(collections)) {
   app.get(`/api/${name}`, requireAuth, (_req, res) => {
-    const rows = db.prepare(config.select).all().map((row) => config.deserialize ? config.deserialize(row) : ({ ...row, ...(name === 'members' && { isAdmin: Boolean(row.isAdmin) }), ...(name === 'tasks' && { done: Boolean(row.done) }), ...(name === 'shopping' && { checked: Boolean(row.checked) }) }));
-    res.json(rows);
+    res.json(collectionPayload(name, config));
   });
 
   app.put(`/api/${name}`, requireAuth, (req, res) => {
     if (name === 'members' && !req.member.isAdmin) return res.status(403).json({ error: 'Nur Administratoren dürfen Mitglieder verwalten.' });
     if (!Array.isArray(req.body?.items)) return res.status(400).json({ error: 'Ungültige Daten.' });
+    const previousItems = collectionPayload(name, config);
     const items = req.body.items.map(config.normalize);
     if (items.some((item) => !item.id || (!(item.name || item.text)))) return res.status(400).json({ error: 'Name oder Text fehlt.' });
     const replace = db.transaction(() => {
@@ -477,6 +601,7 @@ for (const [name, config] of Object.entries(collections)) {
       }
     });
     replace();
+    if (['tasks', 'shopping', 'mealplans'].includes(name)) queueCollectionPush(name, previousItems, collectionPayload(name, config), req.member);
     res.json({ ok: true, ...(name === 'tasks' && { progress: progressPayload(req.member.id) }) });
   });
 }

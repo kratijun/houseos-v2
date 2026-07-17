@@ -1,0 +1,23 @@
+{
+  "name": "HouseOS",
+  "short_name": "HouseOS",
+  "description": "Das lokale Betriebssystem für deinen Haushalt.",
+  "lang": "de-DE",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
+  "background_color": "#eef4fb",
+  "theme_color": "#0d2f28",
+  "categories": ["lifestyle", "productivity", "utilities"],
+  "icons": [
+    { "src": "/icons/houseos.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" },
+    { "src": "/icons/houseos-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/houseos-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Einkauf", "short_name": "Einkauf", "url": "/?app=shopping", "icons": [{ "src": "/icons/houseos-192.png", "sizes": "192x192" }] },
+    { "name": "Aufgaben", "short_name": "Aufgaben", "url": "/?app=tasks", "icons": [{ "src": "/icons/houseos-192.png", "sizes": "192x192" }] }
+  ]
+}

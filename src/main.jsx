@@ -173,6 +173,86 @@ function useDatabaseCollection(resource, fallback, enabled) {
   return [value, update, online];
 }
 
+const pushApplicationKey = value => {
+  const padding = '='.repeat((4 - value.length % 4) % 4);
+  const binary = atob(`${value}${padding}`.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(binary, character => character.charCodeAt(0));
+};
+
+function usePushNotifications(memberId) {
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const [state, setState] = useState({ status: supported ? 'loading' : 'unsupported', busy: false, message: '' });
+
+  const refresh = async () => {
+    if (!supported) return;
+    try {
+      const response = await fetch('/api/push/status', { cache: 'no-store' });
+      if (!response.ok) throw new Error('Push-Dienst ist nicht erreichbar.');
+      const config = await response.json();
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription();
+      if (subscription) await fetch('/api/push/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription }) });
+      setState({ status: subscription ? 'subscribed' : Notification.permission === 'denied' ? 'denied' : 'available', busy: false, message: '', publicKey: config.publicKey });
+    } catch (error) {
+      setState(current => ({ ...current, status: 'error', busy: false, message: error.message || 'Mitteilungen konnten nicht geprüft werden.' }));
+    }
+  };
+
+  useEffect(() => { refresh(); }, [memberId]);
+
+  const enable = async () => {
+    setState(current => ({ ...current, busy: true, message: '' }));
+    try {
+      const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission();
+      if (permission !== 'granted') throw new Error('Benachrichtigungen wurden im Browser nicht erlaubt.');
+      const configResponse = await fetch('/api/push/status', { cache: 'no-store' });
+      if (!configResponse.ok) throw new Error('Push-Dienst ist nicht erreichbar.');
+      const config = await configResponse.json();
+      const registration = await navigator.serviceWorker.ready;
+      const existing = await registration.pushManager.getSubscription();
+      const subscription = existing || await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: pushApplicationKey(config.publicKey) });
+      const response = await fetch('/api/push/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription }) });
+      if (!response.ok) throw new Error((await response.json()).error || 'Abonnement konnte nicht gespeichert werden.');
+      setState({ status: 'subscribed', busy: false, message: 'Mitteilungen sind auf diesem Gerät aktiv.', publicKey: config.publicKey });
+      return true;
+    } catch (error) {
+      setState(current => ({ ...current, status: Notification.permission === 'denied' ? 'denied' : 'error', busy: false, message: error.message || 'Mitteilungen konnten nicht aktiviert werden.' }));
+      return false;
+    }
+  };
+
+  const disable = async () => {
+    setState(current => ({ ...current, busy: true, message: '' }));
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription();
+      if (subscription) {
+        await fetch('/api/push/subscribe', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: subscription.endpoint }) });
+        await subscription.unsubscribe();
+      }
+      setState(current => ({ ...current, status: 'available', busy: false, message: 'Mitteilungen sind auf diesem Gerät ausgeschaltet.' }));
+      return true;
+    } catch (error) {
+      setState(current => ({ ...current, busy: false, message: error.message || 'Mitteilungen konnten nicht ausgeschaltet werden.' }));
+      return false;
+    }
+  };
+
+  const test = async () => {
+    setState(current => ({ ...current, busy: true, message: '' }));
+    try {
+      const registration = await navigator.serviceWorker.ready;
+      const subscription = await registration.pushManager.getSubscription();
+      if (!subscription) throw new Error('Dieses Gerät ist nicht mehr für Mitteilungen registriert.');
+      const response = await fetch('/api/push/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: subscription.endpoint }) });
+      if (!response.ok) throw new Error('Testmitteilung konnte nicht gesendet werden.');
+      setState(current => ({ ...current, busy: false, message: 'Testmitteilung wurde gesendet.' }));
+    } catch (error) { setState(current => ({ ...current, busy: false, message: error.message })); }
+  };
+
+  return { ...state, supported, enable, disable, test };
+}
+
 function useDeviceContext(enabled) {
   const [context, setContext] = useState({ location: 'Standort wird ermittelt …', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, weather: null, status: 'loading' });
   const refresh = async (cityOverride) => {
@@ -344,9 +424,29 @@ const shiftDateValue = (value, days) => { const date = new Date(`${value}T12:00:
 const loadWorkspace = memberId => {
   try {
     const saved = JSON.parse(localStorage.getItem(`houseos.workspace.${memberId}`));
-    return { activeApps: Array.isArray(saved?.activeApps) && saved.activeApps.length ? saved.activeApps.filter(id => APP_DEFS[id]) : ['today'], minimizedApps: Array.isArray(saved?.minimizedApps) ? saved.minimizedApps.filter(id => APP_DEFS[id]) : [], focused: APP_DEFS[saved?.focused] ? saved.focused : 'today' };
+    const requestedApp = new URLSearchParams(window.location.search).get('app');
+    const focused = APP_DEFS[requestedApp] ? requestedApp : APP_DEFS[saved?.focused] ? saved.focused : 'today';
+    const savedApps = Array.isArray(saved?.activeApps) && saved.activeApps.length ? saved.activeApps.filter(id => APP_DEFS[id]) : ['today'];
+    return { activeApps: [...new Set([...savedApps, focused])], minimizedApps: Array.isArray(saved?.minimizedApps) ? saved.minimizedApps.filter(id => APP_DEFS[id] && id !== focused) : [], focused };
   } catch { return { activeApps: ['today'], minimizedApps: [], focused: 'today' }; }
 };
+
+const detectPhoneLayout = () => {
+  const shortestViewport = Math.min(window.innerWidth, window.innerHeight);
+  const phoneUserAgent = /iPhone|iPod|Android.+Mobile|Windows Phone/i.test(navigator.userAgent);
+  return phoneUserAgent || shortestViewport <= 560;
+};
+
+function usePhoneLayout() {
+  const [isPhone, setIsPhone] = useState(detectPhoneLayout);
+  useEffect(() => {
+    const update = () => setIsPhone(detectPhoneLayout());
+    window.addEventListener('resize', update);
+    window.addEventListener('orientationchange', update);
+    return () => { window.removeEventListener('resize', update); window.removeEventListener('orientationchange', update); };
+  }, []);
+  return isPhone;
+}
 
 function Desktop({ currentMember, onMemberChange, authUsers, onUsersChanged, authError, setAuthError }) {
   const initialWorkspace = useMemo(() => loadWorkspace(currentMember.id), [currentMember.id]);
@@ -364,6 +464,8 @@ function Desktop({ currentMember, onMemberChange, authUsers, onUsersChanged, aut
   const [restartNotice, setRestartNotice] = useState(null);
   const [timers, setTimers] = useState(loadKitchenTimers);
   const [timerNow, setTimerNow] = useState(Date.now());
+  const [installPrompt, setInstallPrompt] = useState(null);
+  const isPhone = usePhoneLayout();
   const [tasks, setTasks, tasksOnline] = useDatabaseCollection('tasks', defaultTasks, true);
   const [shopping, setShopping, shoppingOnline] = useDatabaseCollection('shopping', defaultShopping, true);
   const [mealPlans, setMealPlans, mealPlansOnline] = useDatabaseCollection('mealplans', [], true);
@@ -415,6 +517,19 @@ function Desktop({ currentMember, onMemberChange, authUsers, onUsersChanged, aut
     const events = ['pointerdown', 'keydown', 'touchstart']; events.forEach(name => window.addEventListener(name, armIdle, { passive: true })); armIdle();
     return () => { clearTimeout(lockTimer); events.forEach(name => window.removeEventListener(name, armIdle)); };
   }, [locked, preferences.ambientMode]);
+  useEffect(() => {
+    const captureInstallPrompt = event => { event.preventDefault(); setInstallPrompt(event); };
+    const clearInstallPrompt = () => setInstallPrompt(null);
+    window.addEventListener('beforeinstallprompt', captureInstallPrompt);
+    window.addEventListener('appinstalled', clearInstallPrompt);
+    return () => { window.removeEventListener('beforeinstallprompt', captureInstallPrompt); window.removeEventListener('appinstalled', clearInstallPrompt); };
+  }, []);
+  const installApp = async () => {
+    if (!installPrompt) return;
+    await installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => null);
+    setInstallPrompt(null);
+  };
   const openApp = (id) => { setActiveApps(apps => [...apps.filter(app => app !== id), id]); setMinimizedApps(apps => apps.filter(app => app !== id)); setFocused(id); setLauncherOpen(false); };
   const openPrint = (type) => { setPrintType(type); openApp('printer'); };
   const focusApp = (id) => { setActiveApps(apps => [...apps.filter(app => app !== id), id]); setFocused(id); };
@@ -426,12 +541,13 @@ function Desktop({ currentMember, onMemberChange, authUsers, onUsersChanged, aut
   const removeTimer = id => setTimers(current => current.filter(timer => timer.id !== id));
   const temp = device.weather?.temperature;
   const resolvedAppearance = preferences.appearance === 'auto' ? (systemDark ? 'dark' : 'light') : preferences.appearance;
-  return <main className={`desktop theme-${resolvedAppearance} wallpaper-${preferences.wallpaper} ${preferences.largeText ? 'large-text' : ''} ${preferences.highContrast ? 'high-contrast' : ''} ${preferences.reduceMotion ? 'reduce-motion' : ''}`} style={{ '--blue': preferences.accent }} onClick={() => launcherOpen && setLauncherOpen(false)}>
+  return <main className={`desktop theme-${resolvedAppearance} wallpaper-${preferences.wallpaper} ${isPhone ? 'phone-layout' : 'tablet-layout'} ${preferences.largeText ? 'large-text' : ''} ${preferences.highContrast ? 'high-contrast' : ''} ${preferences.reduceMotion ? 'reduce-motion' : ''}`} style={{ '--blue': preferences.accent }} onClick={() => launcherOpen && setLauncherOpen(false)}>
     <div className="ambient ambient-one" /><div className="ambient ambient-two" />
     <header className="topbar">
       <button className="brand" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }}><span className="brand-mark"><Home size={16} /></span><span>house<span>os</span></span></button>
       <button className="topbar-center location-button" onClick={refreshDevice} title="Standort und Wetter aktualisieren"><CloudSun size={16} /><span>{device.location}</span>{Number.isFinite(temp) && <strong>{Math.round(temp)}°</strong>}</button>
-      <div className="topbar-actions"><span className={`system-ok ${databaseOnline ? '' : 'offline'}`}><i /> {databaseOnline ? 'Synchronisiert' : 'Nur lokal'}</span><span>{time.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: 'short' })}</span><strong>{time.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</strong><button className="logout" onClick={() => setLocked(true)} title="HouseOS sperren" aria-label="HouseOS sperren"><Lock size={15} /></button></div>
+      <div className="mobile-context"><small>{greeting(time.getHours())}</small><strong>{currentMember.name}</strong></div>
+      <div className="topbar-actions">{installPrompt && <button className="install-pwa" onClick={installApp} title="HouseOS installieren" aria-label="HouseOS als App installieren"><Download size={15} /></button>}<span className={`system-ok ${databaseOnline ? '' : 'offline'}`}><i /> {databaseOnline ? 'Synchronisiert' : 'Nur lokal'}</span><span>{time.toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: 'short' })}</span><strong>{time.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</strong><button className="logout" onClick={() => setLocked(true)} title="HouseOS sperren" aria-label="HouseOS sperren"><Lock size={15} /></button></div>
     </header>
     <section className="welcome-copy"><p>{greeting(time.getHours())}, {currentMember.name}</p><h1>Dein Zuhause ist<br /><em>bereit für den Tag.</em></h1></section>
     <aside className="desktop-icons">{Object.entries(APP_DEFS).map(([id, app]) => <DesktopIcon key={id} app={app} onClick={() => openApp(id)} />)}</aside>
@@ -446,7 +562,7 @@ function Desktop({ currentMember, onMemberChange, authUsers, onUsersChanged, aut
       {id === 'printer' && <PrintCenter tasks={tasks} shopping={shopping} notify={setToast} initialType={printType} device={device} />}
       {id === 'settings' && <SettingsApp member={currentMember} onMemberChange={onMemberChange} preferences={preferences} setPreferences={setPreferences} items={members} setItems={setMembers} tasks={tasks} setTasks={setTasks} notify={setToast} device={device} refreshDevice={refreshDevice} />}
     </Window>)}</section>
-    <nav className="dock" aria-label="Hauptnavigation"><button className="dock-home" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }} aria-label="Home-Menü"><Command size={20} /><span className="dock-label">Home</span></button><span className="dock-separator" />{Object.entries(APP_DEFS).map(([id, app]) => { const Icon = app.icon; return <button key={id} className={`dock-app ${focused === id ? 'focused' : ''}`} onClick={() => openApp(id)} style={{ '--app': app.color }} title={app.title} aria-current={focused === id ? 'page' : undefined}><Icon size={21} /><span className="dock-label">{app.title === 'Einstellungen' ? 'Setup' : app.title}</span>{activeApps.includes(id) && <i />}</button>; })}</nav>
+    <nav className="dock" aria-label="Hauptnavigation"><button className="dock-home" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }} aria-label="Weitere Apps"><Command size={20} /><span className="dock-label">Mehr</span></button><span className="dock-separator" />{Object.entries(APP_DEFS).map(([id, app]) => { const Icon = app.icon; const phonePrimary = ['today', 'tasks', 'shopping', 'meals'].includes(id); return <button key={id} className={`dock-app ${phonePrimary ? 'phone-primary' : 'phone-secondary'} ${focused === id ? 'focused' : ''}`} onClick={() => openApp(id)} style={{ '--app': app.color }} title={app.title} aria-current={focused === id ? 'page' : undefined}><Icon size={21} /><span className="dock-label">{id === 'meals' ? 'Essen' : app.title === 'Einstellungen' ? 'Setup' : app.title}</span>{activeApps.includes(id) && <i />}</button>; })}</nav>
     {toast && <div className="toast" role="status" aria-live="polite"><CheckCircle2 size={18} />{toast}</div>}
     {locked && !ringingTimers.length && <LockScreen time={time} device={device} tasks={tasks} mealPlans={mealPlans} progress={progress} users={authUsers} onUsersChanged={onUsersChanged} error={authError} setError={setAuthError} onAuthenticated={nextMember => nextMember.id === currentMember.id ? setLocked(false) : onMemberChange(nextMember)} />}
     {!!ringingTimers.length && <TimerAlarm timers={ringingTimers} onStop={removeTimer} />}
@@ -851,6 +967,26 @@ function MealPlanner({ items, setItems, savedDishes, setSavedDishes, shopping, s
   </div>;
 }
 
+function NotificationSettings({ member, preferences, updatePreference }) {
+  const push = usePushNotifications(member.id);
+  const subscribed = push.status === 'subscribed';
+  const toggle = async value => {
+    const changed = value ? await push.enable() : await push.disable();
+    if (changed) updatePreference('notifications', value);
+  };
+  const statusText = push.status === 'subscribed' ? 'Aktiv auf diesem Gerät' : push.status === 'denied' ? 'Im Browser blockiert' : push.status === 'unsupported' ? 'Auf diesem Gerät nicht verfügbar' : push.status === 'loading' ? 'Wird geprüft …' : 'Noch nicht aktiviert';
+  return <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Mitteilungen" description="Erhalte wichtige Änderungen auch bei geschlossener App." />
+    <div className="settings-card push-settings">
+      <SettingSwitch icon={Bell} color="#ff3b30" title="Push-Mitteilungen" subtitle={statusText} checked={subscribed} disabled={!push.supported || push.busy || push.status === 'denied'} onChange={toggle} />
+      <SettingSwitch icon={Volume2} color="#ff9500" title="Töne" subtitle="Vom Betriebssystem abgespielte Hinweistöne erlauben" checked={preferences.sounds} onChange={value => updatePreference('sounds', value)} />
+      <div className="settings-row push-actions"><span><strong>Funktion prüfen</strong><small>Sendet eine Testmitteilung an dieses Gerät</small></span><button className="settings-save" disabled={!subscribed || push.busy} onClick={push.test}>Test senden</button></div>
+    </div>
+    {push.status === 'unsupported' && <p className="device-hint">Auf iPhone und iPad muss HouseOS zuerst zum Home-Bildschirm hinzugefügt und von dort geöffnet werden.</p>}
+    {push.status === 'denied' && <p className="settings-error">Benachrichtigungen sind im Browser blockiert. Erlaube sie in den Website- oder App-Einstellungen.</p>}
+    {push.message && <p className={push.status === 'error' ? 'settings-error' : 'device-hint'}>{push.message}</p>}
+  </section>;
+}
+
 function SettingsApp({ member, onMemberChange, preferences, setPreferences, items, setItems, tasks, setTasks, notify, device, refreshDevice }) {
   const [section, setSection] = useState('profile'); const [profileName, setProfileName] = useState(member.name); const [saving, setSaving] = useState(false); const [error, setError] = useState(''); const fileInput = useRef(null);
   const groups = [
@@ -869,13 +1005,13 @@ function SettingsApp({ member, onMemberChange, preferences, setPreferences, item
   return <div className="settings-shell">
     <aside className="settings-sidebar">
       <label className="settings-search"><Search size={14} /><span>Einstellungen</span></label>
-      <button className={`settings-account ${section === 'profile' ? 'selected' : ''}`} onClick={() => setSection('profile')}><ProfileAvatar member={member} preferences={preferences} className="settings-avatar profile-image" /><span><strong>{member.name}</strong><small>{member.role}</small></span><ChevronRight size={15} /></button>
-      {groups.map(group => <div className="settings-group" key={group.label}><small>{group.label}</small>{group.items.filter(([id]) => id !== 'profile').map(([id,label,Icon,color]) => <button key={id} className={section === id ? 'selected' : ''} onClick={() => setSection(id)}><i style={{ '--category': color }}><Icon size={14} /></i><span>{label}</span><ChevronRight size={14} /></button>)}</div>)}
+      <button aria-label="Profil" className={`settings-account ${section === 'profile' ? 'selected' : ''}`} onClick={() => setSection('profile')}><ProfileAvatar member={member} preferences={preferences} className="settings-avatar profile-image" /><span><strong>{member.name}</strong><small>{member.role}</small></span><ChevronRight size={15} /></button>
+      {groups.map(group => <div className="settings-group" key={group.label}><small>{group.label}</small>{group.items.filter(([id]) => id !== 'profile').map(([id,label,Icon,color]) => <button aria-label={label} title={label} key={id} className={section === id ? 'selected' : ''} onClick={() => setSection(id)}><i style={{ '--category': color }}><Icon size={14} /></i><span>{label}</span><ChevronRight size={14} /></button>)}</div>)}
     </aside>
     <main className="settings-detail">
       {section === 'profile' && <section className="preference-panel"><header><span className="settings-kicker">PERSÖNLICH</span><h2>Dein Profil</h2><p>So erscheinst du in HouseOS.</p></header><form className="profile-settings" onSubmit={saveProfile}><div className="profile-photo-wrap"><ProfileAvatar member={{ ...member, name: profileName }} preferences={preferences} className="profile-photo profile-image" /><button type="button" onClick={() => fileInput.current?.click()}><Camera size={15} /> Foto ändern</button><input ref={fileInput} hidden type="file" accept="image/*" onChange={uploadAvatar} /></div><div className="settings-card profile-fields"><label><span>Name</span><input value={profileName} onChange={event => setProfileName(event.target.value)} /></label><div className="settings-row"><span><strong>Rolle</strong><small>Vom Haushaltsadmin verwaltet</small></span><b>{member.role}</b></div></div><div className="profile-actions">{preferences.avatar && <button type="button" className="text-button danger" onClick={() => updatePreference('avatar', '')}>Foto entfernen</button>}<button className="settings-save" disabled={saving}>{saving ? 'Wird gespeichert …' : 'Änderungen sichern'}</button></div>{error && <p className="settings-error">{error}</p>}</form></section>}
       {section === 'appearance' && <AppearanceSettings preferences={preferences} updatePreference={updatePreference} />}
-      {section === 'notifications' && <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Mitteilungen" description="Lege fest, wie HouseOS dich informiert." /><div className="settings-card"><SettingSwitch icon={Bell} color="#ff3b30" title="Mitteilungen erlauben" subtitle="Hinweise zu Aufgaben und gemeinsamen Listen" checked={preferences.notifications} onChange={value => updatePreference('notifications', value)} /><SettingSwitch icon={Volume2} color="#ff9500" title="Töne" subtitle="Bei wichtigen Hinweisen einen Ton abspielen" checked={preferences.sounds} onChange={value => updatePreference('sounds', value)} /></div></section>}
+      {section === 'notifications' && <NotificationSettings member={member} preferences={preferences} updatePreference={updatePreference} />}
       {section === 'accessibility' && <section className="preference-panel"><PreferenceHeader kicker="PERSÖNLICH" title="Bedienungshilfen" description="Passe Lesbarkeit und Bewegungen an deine Bedürfnisse an." /><div className="settings-card"><SettingSwitch icon={Eye} color="#007aff" title="Größerer Text" subtitle="Die gesamte HouseOS-Oberfläche deutlich vergrößern" checked={preferences.largeText} onChange={value => updatePreference('largeText', value)} /><SettingSwitch icon={Contrast} color="#5856d6" title="Mehr Kontrast" subtitle="Trennlinien und Flächen deutlicher anzeigen" checked={preferences.highContrast} onChange={value => updatePreference('highContrast', value)} /><SettingSwitch icon={Accessibility} color="#34c759" title="Bewegung reduzieren" subtitle="Animationen und Übergänge minimieren" checked={preferences.reduceMotion} onChange={value => updatePreference('reduceMotion', value)} /></div></section>}
       {section === 'general' && <GeneralSettings preferences={preferences} updatePreference={updatePreference} member={member} notify={notify} device={device} refreshDevice={refreshDevice} />}
       {section === 'bluetooth' && <BluetoothSettings member={member} notify={notify} />}
@@ -997,7 +1133,7 @@ function BluetoothSettings({ member, notify }) {
 
 function PreferenceHeader({ kicker, title, description }) { return <header><span className="settings-kicker">{kicker}</span><h2>{title}</h2><p>{description}</p></header>; }
 
-function SettingSwitch({ icon: Icon, color, title, subtitle, checked, onChange }) { return <label className="settings-row icon-row switch-row"><i style={{ '--category': color }}><Icon size={15} /></i><span><strong>{title}</strong><small>{subtitle}</small></span><input type="checkbox" checked={checked} onChange={event => onChange(event.target.checked)} /><em /></label>; }
+function SettingSwitch({ icon: Icon, color, title, subtitle, checked, disabled = false, onChange }) { return <label className={`settings-row icon-row switch-row ${disabled ? 'disabled' : ''}`}><i style={{ '--category': color }}><Icon size={15} /></i><span><strong>{title}</strong><small>{subtitle}</small></span><input type="checkbox" checked={checked} disabled={disabled} onChange={event => onChange(event.target.checked)} /><em /></label>; }
 
 function AppearanceSettings({ preferences, updatePreference }) {
   const accents = ['#007aff','#5856d6','#af52de','#ff2d55','#ff3b30','#ff9500','#ffcc00','#34c759'];
@@ -1152,3 +1288,7 @@ function OnScreenKeyboard() {
 const root = import.meta.hot?.data.root ?? createRoot(document.getElementById('root'));
 if (import.meta.hot) import.meta.hot.data.root = root;
 root.render(<><App /><OnScreenKeyboard /></>);
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+}

@@ -47,6 +47,8 @@ body { margin: 0; min-width: 320px; min-height: 100vh; overflow: hidden; }
 
 button { -webkit-tap-highlight-color: transparent; }
 button:focus-visible, input:focus-visible { outline: 3px solid rgba(0, 113, 227, .28); outline-offset: 2px; }
+.mobile-context { display: none; }
+.install-pwa { width: 29px; height: 29px; display: grid; place-items: center; border: 0; border-radius: 9px; color: var(--blue); background: rgba(0,113,227,.1); cursor: pointer; }
 
 .desktop {
   background:
@@ -371,6 +373,114 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(0, 113, 227,
   .member-actions { grid-column: 3; grid-row: 2; margin: 0; align-self: start; }
 }
 
+/* Eigenständige Smartphone-Oberfläche. Tablets behalten das Fenster- und Dock-Layout. */
+.phone-layout {
+  --phone-topbar: calc(61px + env(safe-area-inset-top));
+  --phone-nav: calc(72px + env(safe-area-inset-bottom));
+  min-height: 100svh;
+  overflow: hidden;
+  background: #f2f2f7;
+}
+.phone-layout .ambient,.phone-layout .welcome-copy,.phone-layout .desktop-icons,.phone-layout .house-pet { display: none; }
+.phone-layout .topbar {
+  height: var(--phone-topbar);
+  padding: env(safe-area-inset-top) 14px 0;
+  border-bottom: .5px solid var(--separator);
+  color: var(--label);
+  background: rgba(249,249,252,.88);
+  box-shadow: none;
+}
+.phone-layout .brand { width: 36px; flex: none; }
+.phone-layout .brand>span:last-child { display: none; }
+.phone-layout .brand-mark { width: 34px; height: 34px; border-radius: 11px; color: white; background: linear-gradient(145deg,#2385ef,#0766d3); box-shadow: 0 5px 14px rgba(0,113,227,.23); }
+.phone-layout .mobile-context { min-width: 0; display: flex; flex: 1; flex-direction: column; margin-left: 10px; }
+.phone-layout .mobile-context small { color: var(--secondary); font-size: 9px; }
+.phone-layout .mobile-context strong { overflow: hidden; margin-top: 1px; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.phone-layout .topbar-center,.phone-layout .topbar-actions>span { display: none; }
+.phone-layout .topbar-actions { gap: 7px; }
+.phone-layout .topbar-actions .logout,.phone-layout .install-pwa { width: 34px; height: 34px; border-radius: 11px; }
+.phone-layout .window-layer { inset: var(--phone-topbar) 0 var(--phone-nav); display: block; background: #f2f2f7; }
+.phone-layout .window { width: 100%; height: 100%; border: 0; border-radius: 0; background: #f2f2f7; box-shadow: none; transform: none !important; backdrop-filter: none; }
+.phone-layout .window.mode-left,.phone-layout .window.mode-right,.phone-layout .window.mode-maximized { position: relative; inset: auto; width: 100%; height: 100%; border-radius: 0; }
+.phone-layout .window.inactive-window { display: none; }
+.phone-layout .titlebar,.phone-layout .snap-preview { display: none; }
+.phone-layout .window-content { height: 100%; overscroll-behavior-y: contain; }
+.phone-layout .app-page { min-height: 100%; padding: 22px 15px 28px; background: #f2f2f7; }
+.phone-layout .app-heading { margin-bottom: 18px; }
+.phone-layout .app-heading h2 { font-size: 28px; }
+.phone-layout .metric-grid,.phone-layout .two-columns,.phone-layout .print-layout { grid-template-columns: 1fr; }
+.phone-layout .weather-card { grid-column: auto; }
+.phone-layout .weather-card,.phone-layout .metric-card,.phone-layout .content-card,.phone-layout .thought,.phone-layout .full-list { border-radius: 18px; }
+.phone-layout .dock {
+  z-index: 90;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  max-width: none;
+  height: var(--phone-nav);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-around;
+  gap: 0;
+  padding: 7px 5px env(safe-area-inset-bottom);
+  border: 0;
+  border-top: .5px solid var(--separator);
+  border-radius: 0;
+  background: rgba(249,249,252,.94);
+  box-shadow: 0 -8px 30px rgba(30,40,70,.08);
+  transform: none;
+}
+.phone-layout .dock-separator,.phone-layout .dock .phone-secondary { display: none; }
+.phone-layout .dock button {
+  width: auto;
+  min-width: 0;
+  height: 58px;
+  display: flex;
+  flex: 1 1 20%;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 3px;
+  border-radius: 12px;
+  color: var(--secondary);
+  background: transparent;
+  box-shadow: none;
+}
+.phone-layout .dock button:hover { transform: none; filter: none; }
+.phone-layout .dock-home { order: 5; }
+.phone-layout .dock-home svg { color: #5e5ce6; }
+.phone-layout .dock-app.focused { color: var(--app); background: color-mix(in srgb,var(--app),transparent 91%); }
+.phone-layout .dock-app i { display: none; }
+.phone-layout .dock-label { display: block; color: currentColor; font-size: 8px; font-weight: 700; line-height: 1; }
+.phone-layout .launcher {
+  position: fixed;
+  top: auto;
+  right: 8px;
+  bottom: calc(var(--phone-nav) + 7px);
+  left: 8px;
+  width: auto;
+  max-height: calc(100svh - var(--phone-topbar) - var(--phone-nav) - 20px);
+  overflow-y: auto;
+  padding: 18px;
+  border-radius: 24px;
+  background: rgba(249,249,252,.97);
+  box-shadow: 0 20px 65px rgba(20,28,50,.3);
+}
+.phone-layout .launcher-grid { grid-template-columns: 1fr 1fr; }
+.phone-layout .launcher-grid button { min-height: 57px; }
+.phone-layout .toast { right: 12px; bottom: calc(var(--phone-nav) + 10px); left: 12px; justify-content: center; }
+.phone-layout.theme-dark,.phone-layout.theme-dark .window-layer,.phone-layout.theme-dark .window,.phone-layout.theme-dark .app-page { background: #000; }
+.phone-layout.theme-dark .topbar,.phone-layout.theme-dark .dock { background: rgba(28,28,30,.94); }
+
+@media (orientation: landscape) and (max-height: 560px) {
+  .phone-layout { --phone-topbar: calc(48px + env(safe-area-inset-top)); --phone-nav: calc(60px + env(safe-area-inset-bottom)); }
+  .phone-layout .mobile-context small { display: none; }
+  .phone-layout .dock button { height: 46px; }
+  .phone-layout .dock-label { font-size: 7px; }
+  .phone-layout .app-page { padding-top: 16px; }
+}
+
 /* Persönliche Einstellungen */
 .settings-shell { height: 100%; min-height: 0; display: grid; grid-template-columns: 228px minmax(0,1fr); color: var(--label); background: rgba(246,247,250,.84); }
 .settings-sidebar { min-height: 0; overflow-y: auto; padding: 15px 11px 22px; border-right: 1px solid var(--separator); background: rgba(233,235,240,.76); }
@@ -384,6 +494,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid rgba(0, 113, 227,
 .preference-panel,.admin-settings-panel { width: min(100%,720px); margin: 0 auto; }.preference-panel>header{margin-bottom:25px}.settings-kicker{color:var(--blue);font-size:8px;font-weight:750;letter-spacing:.1em}.preference-panel>header h2{margin:5px 0 4px;font-size:26px;letter-spacing:-.045em}.preference-panel>header p{margin:0;color:var(--secondary);font-size:10px}.settings-section-title{margin:24px 10px 7px;font-size:10px}
 .settings-card { overflow: hidden; border: .5px solid var(--separator); border-radius: 13px; background: rgba(255,255,255,.78); box-shadow: 0 2px 10px rgba(0,0,0,.025); }
 .settings-row { min-height: 52px; display: flex; align-items: center; gap: 11px; padding: 9px 13px; }.settings-row+.settings-row{border-top:.5px solid var(--separator)}.settings-row>span{min-width:0;flex:1;display:flex;flex-direction:column}.settings-row strong{font-size:10px}.settings-row small{margin-top:2px;color:var(--secondary);font-size:8px}.settings-row>b{color:var(--secondary);font-size:9px;font-weight:500}.settings-row select{min-width:100px;border:0;outline:0;color:var(--blue);background:transparent;text-align:right;font-size:9px}
+.switch-row.disabled{opacity:.55}.push-actions .settings-save{flex:0 0 auto}.push-settings+.device-hint,.push-settings+.settings-error,.push-settings~.device-hint,.push-settings~.settings-error{margin:10px 4px 0}.push-actions button{white-space:nowrap}
 .profile-settings { display: grid; grid-template-columns: 126px 1fr; gap: 16px 18px; align-items: start; }.profile-photo-wrap{display:flex;align-items:center;flex-direction:column;gap:10px}.profile-photo{width:96px;height:96px;display:grid;place-items:center;border-radius:50%;color:white;background-color:var(--avatar);box-shadow:0 10px 28px rgba(0,0,0,.14),inset 0 1px rgba(255,255,255,.35);font-size:24px;font-weight:750}.profile-photo-wrap>button{display:flex;align-items:center;gap:5px;border:0;color:var(--blue);background:transparent;cursor:pointer;font-size:9px}.profile-fields label{display:block;padding:12px 13px}.profile-fields label span{display:block;margin-bottom:6px;font-size:8px;font-weight:650}.profile-fields input{width:100%;height:36px;padding:0 10px;border:.5px solid var(--separator);border-radius:8px;outline:0;background:rgba(248,248,250,.8);font-size:11px}.profile-fields input:focus{border-color:var(--blue);box-shadow:0 0 0 3px color-mix(in srgb,var(--blue),transparent 87%)}.profile-actions{grid-column:2;display:flex;justify-content:flex-end;align-items:center;gap:9px}.settings-save{height:34px;padding:0 13px;border:0;border-radius:8px;color:white;background:var(--blue);cursor:pointer;font-size:9px;font-weight:650}.settings-save:disabled{opacity:.5}.text-button{border:0;color:var(--blue);background:transparent;cursor:pointer;font-size:9px}.text-button.danger{color:#ff3b30}.profile-settings>.settings-error{grid-column:2;margin:0}
 .appearance-options { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; }.appearance-options>button{position:relative;padding:9px 9px 10px;border:1.5px solid transparent;border-radius:12px;color:inherit;background:rgba(255,255,255,.55);cursor:pointer}.appearance-options>button.selected{border-color:var(--blue);background:color-mix(in srgb,var(--blue),white 94%)}.appearance-options>button>strong{display:block;margin-top:7px;font-size:9px}.appearance-options>button>svg{position:absolute;right:7px;bottom:7px;color:var(--blue)}.appearance-preview{height:72px;display:grid;grid-template-columns:28% 1fr;grid-template-rows:20px 1fr;overflow:hidden;border:.5px solid rgba(0,0,0,.16);border-radius:7px;background:#f4f4f5;box-shadow:0 2px 5px rgba(0,0,0,.08)}.appearance-preview:before{content:"";grid-row:1/-1;background:#e5e5e7;border-right:.5px solid rgba(0,0,0,.12)}.appearance-preview i{display:block;margin:5px 7px 0;border-radius:3px;background:#fff}.appearance-preview i:nth-child(3){height:21px}.appearance-preview i:nth-child(4){height:12px}.appearance-preview.dark{background:#26262a}.appearance-preview.dark:before{background:#171719}.appearance-preview.dark i{background:#3a3a3e}.appearance-preview.auto{background:linear-gradient(110deg,#f4f4f5 49%,#26262a 50%)}.appearance-preview.auto:before{background:linear-gradient(110deg,#e5e5e7 49%,#171719 50%)}
 .accent-picker{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:7px}.accent-picker button{width:25px;height:25px;display:grid;place-items:center;border:2px solid white;border-radius:50%;color:white;background:var(--accent);box-shadow:0 0 0 1px transparent;cursor:pointer}.accent-picker button.selected{box-shadow:0 0 0 2px var(--accent)}
@@ -796,3 +907,24 @@ html.touch-ui,html.touch-ui body{overscroll-behavior:none;-webkit-text-size-adju
 .ambient-weekly-meals{position:relative;z-index:1;margin:12px 0 0;padding:11px 13px;color:white;border-color:rgba(255,255,255,.14);background:rgba(8,15,39,.2);box-shadow:inset 0 1px rgba(255,255,255,.07);backdrop-filter:blur(24px)}.ambient-weekly-meals>header{margin-bottom:7px}.ambient-weekly-meals>header>div>svg{color:#d7b0ff}.ambient-weekly-meals>header strong{font-size:10px}.ambient-weekly-meals>header small{color:rgba(255,255,255,.52);font-size:7px}.ambient-weekly-meals .weekly-meal-grid{min-width:700px;gap:6px}.ambient-weekly-meals .weekly-meal-grid>article{padding:6px 7px;border-color:rgba(255,255,255,.1);background:rgba(255,255,255,.06)}.ambient-weekly-meals .weekly-meal-grid>article.today{border-color:rgba(255,255,255,.35);background:rgba(255,255,255,.12)}.ambient-weekly-meals .weekly-meal-grid>article>header{margin-bottom:4px;color:rgba(255,255,255,.58);font-size:7px}.ambient-weekly-meals .weekly-meal-grid>article>header b{font-size:11px}.ambient-weekly-meals .weekly-meal-grid p{margin:2px 0;color:rgba(255,255,255,.45);font-size:7px}.ambient-weekly-meals .weekly-meal-grid p.planned{color:white}.ambient-weekly-meals .weekly-meal-scroll{overflow:hidden}.desktop.large-text .weekly-meal-overview>header strong{font-size:14px}.desktop.large-text .weekly-meal-overview>header small,.desktop.large-text .weekly-meal-grid p{font-size:10px}
 @media(max-width:780px){.weekly-meal-grid{min-width:720px}.weekly-meal-overview{padding:11px}.weekly-meal-overview>header strong{font-size:12px}.weekly-meal-overview>header small{font-size:9px}}
 @media(max-height:760px){.ambient-weekly-meals{margin-top:9px;padding:8px 11px}.ambient-weekly-meals>header{margin-bottom:5px}.ambient-weekly-meals .weekly-meal-grid>article{padding-block:4px}.ambient-screen blockquote{display:none}}
+
+/* Smartphone-Einstellungen bleiben trotz großer Touch-Ziele zweispaltig nutzbar. */
+.phone-layout .window-content{padding:0}
+.phone-layout .settings-shell{width:100%;grid-template-columns:58px minmax(0,1fr)}
+.phone-layout .settings-sidebar{padding:10px 7px 90px;border-right:1px solid var(--separator)}
+.phone-layout .settings-search{display:none}
+.phone-layout .settings-account{min-height:52px;display:grid;grid-template-columns:1fr;justify-items:center;padding:6px}
+.phone-layout .settings-avatar{width:38px;height:38px}
+.phone-layout .settings-account>span:nth-child(2),.phone-layout .settings-account>svg,.phone-layout .settings-group>small,.phone-layout .settings-group button span,.phone-layout .settings-group button>svg{display:none}
+.phone-layout .settings-group{margin-top:10px}
+.phone-layout .settings-group>button{height:43px;display:grid;grid-template-columns:1fr;justify-items:center;padding:0;border-radius:11px}
+.phone-layout .settings-group>button>i,.phone-layout .icon-row>i{width:30px;height:30px;border-radius:9px}
+.phone-layout .settings-detail{padding:22px 12px 100px}
+.phone-layout .preference-panel>header h2{font-size:26px}
+.phone-layout .preference-panel>header p{font-size:11px;line-height:1.45}
+.phone-layout .settings-row{min-height:64px;padding:10px 12px}
+.phone-layout .settings-row strong{font-size:13px}
+.phone-layout .settings-row small{font-size:10px;line-height:1.35}
+.phone-layout .push-actions{align-items:flex-start;flex-direction:column}
+.phone-layout .push-actions .settings-save{width:100%;height:40px}
+.phone-layout .window,.phone-layout .window.mode-left,.phone-layout .window.mode-right,.phone-layout .window.mode-maximized{position:absolute;inset:0;width:100%;height:100%;border-radius:0}

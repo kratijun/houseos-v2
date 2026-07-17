@@ -17,6 +17,23 @@ npm run dev
 
 Beim ersten Start zeigt HouseOS eine Bootsequenz und anschließend die Benutzerwahl. Bestehende Benutzer ohne PIN richten dort einmalig eine persönliche PIN mit 4 bis 6 Ziffern ein. PINs werden gehasht in SQLite gespeichert; die Anmeldung verwendet ein HttpOnly-Sitzungscookie.
 
+## Smartphone-PWA
+
+HouseOS kann auf Smartphone und Tablet zum Startbildschirm hinzugefügt und anschließend wie eine eigenständige App geöffnet werden.
+
+- Android/Chrome: Browsermenü öffnen und „App installieren“ auswählen.
+- iPhone/Safari: Teilen-Menü öffnen und „Zum Home-Bildschirm“ auswählen.
+- Smartphones erhalten automatisch die kompakte Smartphone-Navigation.
+- Tablets behalten die vollständige Tablet-Oberfläche.
+
+Für die Installation und den Offline-Start muss HouseOS über HTTPS ausgeliefert werden. `localhost` ist während der Entwicklung ebenfalls erlaubt; eine unverschlüsselte lokale IP-Adresse reicht für Service Worker auf Smartphones normalerweise nicht aus.
+
+### Push-Mitteilungen
+
+Unter **Einstellungen → Mitteilungen** kann jedes angemeldete Gerät Push-Mitteilungen aktivieren und mit einer Testnachricht prüfen. HouseOS informiert über neue oder neu zugewiesene Aufgaben, erledigte Aufgaben, neue Einkaufsartikel sowie neue, geänderte oder entfernte Speiseplan-Einträge. Die Person, die eine Änderung selbst vorgenommen hat, wird dabei nicht zusätzlich benachrichtigt.
+
+HouseOS erzeugt beim ersten Serverstart automatisch ein dauerhaftes VAPID-Schlüsselpaar unter `HOUSEOS_DATA_DIR/push-vapid.json`. Alternativ können produktive Schlüssel über `HOUSEOS_VAPID_PUBLIC_KEY`, `HOUSEOS_VAPID_PRIVATE_KEY` und optional `HOUSEOS_VAPID_SUBJECT` bereitgestellt werden. Die private Schlüsseldatei darf nicht veröffentlicht werden und sollte zusammen mit den übrigen HouseOS-Daten gesichert werden.
+
 ## Raspberry Pi
 
 Im Produktionsbetrieb lauscht HouseOS standardmäßig auf allen Netzwerkschnittstellen und ist dadurch im Heimnetz unter `http://<pi-adresse>:3001` erreichbar:
