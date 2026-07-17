@@ -208,7 +208,7 @@ const queueCollectionPush = (name, previousItems, items, actor) => {
     const oldItem = previous.get(Number(item.id));
     return oldItem && JSON.stringify(oldItem) !== JSON.stringify(item);
   });
-  const options = { excludeMemberId: actor.id };
+  const options = {};
 
   if (name === 'tasks') {
     for (const task of added) {

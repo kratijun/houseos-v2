@@ -30,7 +30,7 @@ Für die Installation und den Offline-Start muss HouseOS über HTTPS ausgeliefer
 
 ### Push-Mitteilungen
 
-Unter **Einstellungen → Mitteilungen** kann jedes angemeldete Gerät Push-Mitteilungen aktivieren und mit einer Testnachricht prüfen. HouseOS informiert über neue oder neu zugewiesene Aufgaben, erledigte Aufgaben, neue Einkaufsartikel sowie neue, geänderte oder entfernte Speiseplan-Einträge. Die Person, die eine Änderung selbst vorgenommen hat, wird dabei nicht zusätzlich benachrichtigt.
+Unter **Einstellungen → Mitteilungen** kann jedes angemeldete Gerät Push-Mitteilungen aktivieren und mit einer Testnachricht prüfen. HouseOS informiert über neue oder neu zugewiesene Aufgaben, erledigte Aufgaben, neue Einkaufsartikel sowie neue, geänderte oder entfernte Speiseplan-Einträge. Benachrichtigungen werden auch an den ausführenden Benutzer gesendet, damit Änderungen auf demselben oder einem weiteren persönlichen Gerät sichtbar werden.
 
 HouseOS erzeugt beim ersten Serverstart automatisch ein dauerhaftes VAPID-Schlüsselpaar unter `HOUSEOS_DATA_DIR/push-vapid.json`. Alternativ können produktive Schlüssel über `HOUSEOS_VAPID_PUBLIC_KEY`, `HOUSEOS_VAPID_PRIVATE_KEY` und optional `HOUSEOS_VAPID_SUBJECT` bereitgestellt werden. Die private Schlüsseldatei darf nicht veröffentlicht werden und sollte zusammen mit den übrigen HouseOS-Daten gesichert werden.
 
