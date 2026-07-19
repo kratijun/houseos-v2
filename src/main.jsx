@@ -1385,6 +1385,7 @@ const NUMERIC_KEYBOARD_ROWS = [['1','2','3'],['4','5','6'],['7','8','9'],['-','0
 function OnScreenKeyboard() {
   const [target, setTarget] = useState(null); const [shift, setShift] = useState(false);
   const preserveFocus = useRef(false);
+  const virtualPointer = useRef(false);
   const isPhone = usePhoneLayout();
   useEffect(() => {
     if (isPhone) { setTarget(null); return; }
@@ -1398,13 +1399,16 @@ function OnScreenKeyboard() {
         requestAnimationFrame(() => desktop?.scrollTo?.({ top: desktopScroll, behavior: 'instant' }));
       } else setTimeout(() => element?.scrollIntoView?.({ block: 'center', behavior: 'smooth' }), 80);
     };
-    const focusIn = event => openFor(event.target);
+    const focusIn = event => { if (virtualPointer.current) openFor(event.target); };
     const pointerDown = event => {
+      if (event.target.closest?.('.screen-keyboard')) return;
       if (event.target.closest?.('[data-preserve-keyboard]')) {
         preserveFocus.current = true;
         setTimeout(() => { preserveFocus.current = false; }, 0);
         return;
       }
+      virtualPointer.current = ['touch', 'pen'].includes(event.pointerType) || (!event.pointerType && window.matchMedia?.('(pointer: coarse)').matches);
+      if (!virtualPointer.current) { setTarget(null); return; }
       if (!editable(event.target)) return;
       if (event.target.closest?.('.meal-editor') && document.activeElement !== event.target) {
         event.preventDefault();
@@ -1412,9 +1416,10 @@ function OnScreenKeyboard() {
       }
       openFor(event.target);
     };
+    const physicalKeyDown = () => { virtualPointer.current = false; setTarget(null); };
     const focusOut = event => { if (!preserveFocus.current && !event.relatedTarget?.closest?.('.screen-keyboard, [data-preserve-keyboard]')) setTimeout(() => { if (!document.activeElement?.closest?.('[data-preserve-keyboard]') && !editable(document.activeElement)) setTarget(null); }, 0); };
-    document.addEventListener('pointerdown', pointerDown, true); document.addEventListener('focusin', focusIn); document.addEventListener('focusout', focusOut);
-    return () => { document.removeEventListener('pointerdown', pointerDown, true); document.removeEventListener('focusin', focusIn); document.removeEventListener('focusout', focusOut); };
+    document.addEventListener('pointerdown', pointerDown, true); document.addEventListener('keydown', physicalKeyDown, true); document.addEventListener('focusin', focusIn); document.addEventListener('focusout', focusOut);
+    return () => { document.removeEventListener('pointerdown', pointerDown, true); document.removeEventListener('keydown', physicalKeyDown, true); document.removeEventListener('focusin', focusIn); document.removeEventListener('focusout', focusOut); };
   }, [isPhone]);
   if (isPhone) return null;
   if (!target?.isConnected) return null;
