@@ -230,6 +230,26 @@ const requireAuth = (req, res, next) => {
 };
 const requireAdmin = (req, res, next) => requireAuth(req, res, () => req.member.isAdmin ? next() : res.status(403).json({ error: 'Administratorrechte erforderlich.' }));
 
+const syncClients = new Set();
+const broadcastSync = resource => {
+  const payload = `event: collection\ndata: ${JSON.stringify({ resource, updatedAt: new Date().toISOString() })}\n\n`;
+  for (const client of syncClients) {
+    try { client.write(payload); } catch { syncClients.delete(client); }
+  }
+};
+
+app.get('/api/sync/events', requireAuth, (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+  res.write(`retry: 2000\nevent: ready\ndata: ${JSON.stringify({ ok: true })}\n\n`);
+  syncClients.add(res);
+  const heartbeat = setInterval(() => { try { res.write(': verbunden\n\n'); } catch {} }, 20_000);
+  res.on('close', () => { clearInterval(heartbeat); syncClients.delete(res); });
+});
+
 const pushRows = (memberId = null) => db.prepare(`
   SELECT endpoint, member_id AS memberId, subscription
   FROM push_subscriptions
@@ -603,6 +623,8 @@ app.patch('/api/profile', requireAuth, (req, res) => {
     db.prepare('UPDATE members SET name = ?, color = ? WHERE id = ?').run(name, color, req.member.id);
   });
   update();
+  broadcastSync('members');
+  broadcastSync('tasks');
   res.json({ member: { ...req.member, name, color } });
 });
 
@@ -877,6 +899,7 @@ for (const [name, config] of Object.entries(collections)) {
     });
     replace();
     if (['tasks', 'shopping', 'mealplans'].includes(name)) queueCollectionPush(name, previousItems, collectionPayload(name, config), req.member);
+    broadcastSync(name);
     res.json({ ok: true, ...(name === 'tasks' && { progress: progressPayload(req.member.id) }) });
   });
 }

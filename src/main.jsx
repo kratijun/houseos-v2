@@ -160,31 +160,87 @@ const taskSchedule = (task) => {
   return parts.join(' · ') || (task.time || 'Ohne Termin');
 };
 
+const collectionSyncListeners = new Map();
+let collectionSyncSource = null;
+const subscribeCollectionSync = (resource, listener) => {
+  if (!collectionSyncListeners.has(resource)) collectionSyncListeners.set(resource, new Set());
+  collectionSyncListeners.get(resource).add(listener);
+  if (!collectionSyncSource && 'EventSource' in window) {
+    collectionSyncSource = new EventSource('/api/sync/events');
+    collectionSyncSource.addEventListener('collection', event => {
+      try {
+        const { resource: changedResource } = JSON.parse(event.data || '{}');
+        collectionSyncListeners.get(changedResource)?.forEach(callback => callback());
+      } catch {}
+    });
+  }
+  return () => {
+    const listeners = collectionSyncListeners.get(resource);
+    listeners?.delete(listener);
+    if (listeners && !listeners.size) collectionSyncListeners.delete(resource);
+    if (!collectionSyncListeners.size && collectionSyncSource) { collectionSyncSource.close(); collectionSyncSource = null; }
+  };
+};
+
 function useDatabaseCollection(resource, fallback, enabled) {
   const [value, setValue] = useState(() => {
     try { return JSON.parse(localStorage.getItem(`houseos.${resource}`)) ?? fallback; } catch { return fallback; }
   });
   const valueRef = useRef(value);
+  const writeVersionRef = useRef(0);
+  const pendingWritesRef = useRef(0);
+  const requestIdRef = useRef(0);
+  const writeQueueRef = useRef(Promise.resolve());
   const [online, setOnline] = useState(false);
   useEffect(() => {
     if (!enabled) { setOnline(false); return; }
-    fetch(`/api/${resource}`).then(response => response.ok ? response.json() : Promise.reject()).then(items => {
-      valueRef.current = items; setValue(items); setOnline(true);
-      localStorage.setItem(`houseos.${resource}`, JSON.stringify(items));
-    }).catch(() => setOnline(false));
+    let active = true;
+    const refresh = async () => {
+      const requestId = ++requestIdRef.current;
+      const writeVersion = writeVersionRef.current;
+      try {
+        const response = await fetch(`/api/${resource}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error();
+        const items = await response.json();
+        if (!active || requestId !== requestIdRef.current || writeVersion !== writeVersionRef.current || pendingWritesRef.current) return;
+        valueRef.current = items; setValue(items); setOnline(true);
+        localStorage.setItem(`houseos.${resource}`, JSON.stringify(items));
+        if (resource === 'tasks') {
+          fetch('/api/progress', { cache: 'no-store' }).then(progressResponse => progressResponse.ok ? progressResponse.json() : null)
+            .then(progress => progress && window.dispatchEvent(new CustomEvent('houseos:progress', { detail: progress }))).catch(() => {});
+        }
+      } catch { if (active) setOnline(false); }
+    };
+    const unsubscribe = subscribeCollectionSync(resource, refresh);
+    const interval = setInterval(refresh, 10_000);
+    const refreshVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('focus', refresh);
+    window.addEventListener('online', refresh);
+    document.addEventListener('visibilitychange', refreshVisible);
+    refresh();
+    return () => {
+      active = false; clearInterval(interval); unsubscribe();
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('online', refresh);
+      document.removeEventListener('visibilitychange', refreshVisible);
+    };
   }, [resource, enabled]);
   const update = (updater) => {
     const next = typeof updater === 'function' ? updater(valueRef.current) : updater;
+    writeVersionRef.current += 1; pendingWritesRef.current += 1;
     valueRef.current = next; setValue(next);
     localStorage.setItem(`houseos.${resource}`, JSON.stringify(next));
-    fetch(`/api/${resource}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: next }) })
-      .then(async response => {
+    writeQueueRef.current = writeQueueRef.current.catch(() => {}).then(async () => {
+      try {
+        const response = await fetch(`/api/${resource}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: next }) });
         setOnline(response.ok);
         if (response.ok && resource === 'tasks') {
           const result = await response.json();
           window.dispatchEvent(new CustomEvent('houseos:progress', { detail: result.progress }));
         }
-      }).catch(() => setOnline(false));
+      } catch { setOnline(false); }
+      finally { pendingWritesRef.current = Math.max(0, pendingWritesRef.current - 1); }
+    });
   };
   return [value, update, online];
 }
