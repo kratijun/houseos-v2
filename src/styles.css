@@ -1187,3 +1187,47 @@ html.touch-ui,html.touch-ui body{overscroll-behavior:none;-webkit-text-size-adju
 
 .message-reactions>.message-reply-button{width:24px;min-width:24px;padding:0;color:var(--secondary);opacity:.72}.message-reply-quote{margin:0 0 7px;padding:7px 9px;border-left:3px solid #0a84ff;border-radius:7px;color:var(--secondary);background:rgba(10,132,255,.08)}.message-reply-quote strong{display:flex;align-items:center;gap:4px;color:#0a84ff;font-size:8px}.message-bubble .message-reply-quote span{display:block;max-width:260px;margin:3px 0 0;overflow:hidden;color:inherit;font-size:8px;text-align:left;text-overflow:ellipsis;white-space:nowrap}.message-row.own .message-reply-quote{border-color:rgba(255,255,255,.78);color:rgba(255,255,255,.78);background:rgba(255,255,255,.14)}.message-row.own .message-reply-quote strong{color:white}.voice-message{display:block;width:min(270px,52vw);height:38px}.reply-preview{display:grid;grid-template-columns:22px minmax(0,1fr) 28px;align-items:center;gap:7px;padding:7px 8px;border-left:3px solid #0a84ff;border-radius:9px;background:rgba(10,132,255,.08)}.reply-preview>svg{color:#0a84ff}.reply-preview>span{min-width:0;display:flex;flex-direction:column}.reply-preview strong{font-size:8px}.reply-preview small{overflow:hidden;color:var(--secondary);font-size:8px;text-overflow:ellipsis;white-space:nowrap}.reply-preview button{color:var(--secondary);background:rgba(118,118,128,.1)}.recording-preview{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;color:#d70015;background:rgba(255,59,48,.08);font-size:9px}.recording-preview>i{width:8px;height:8px;border-radius:50%;background:#ff3b30;animation:voice-pulse 1.15s infinite}.recording-preview>span{font-variant-numeric:tabular-nums}.recording-preview>small{margin-left:auto;color:var(--secondary);font-size:7px}.photo-preview audio{grid-column:1/3;width:100%;height:36px}.photo-preview audio+span{display:none}.desktop.theme-dark .message-reply-quote,.desktop.theme-dark .reply-preview{background:rgba(10,132,255,.13)}
 @media(max-width:560px){.voice-message{width:min(245px,66vw)}.message-bubble .message-reply-quote span{max-width:210px}.recording-preview>small{display:none}}
+
+/* Raspberry-Pi-Performance-Modus: teure Compositor-Effekte konsequent vermeiden. */
+.desktop.performance-mode,
+.desktop.performance-mode *,
+.desktop.performance-mode *::before,
+.desktop.performance-mode *::after {
+  scroll-behavior: auto !important;
+  animation: none !important;
+  transition: none !important;
+  backdrop-filter: none !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+}
+.desktop.performance-mode::before,
+.desktop.performance-mode::after,
+.desktop.performance-mode .ambient,
+.desktop.performance-mode .ambient-screen-orb,
+.desktop.performance-mode .pet-effect,
+.desktop.performance-mode .pet-sleep-symbol {
+  display: none !important;
+}
+.desktop.performance-mode .topbar,
+.desktop.performance-mode .dock,
+.desktop.performance-mode .launcher,
+.desktop.performance-mode .window,
+.desktop.performance-mode .settings-shell,
+.desktop.performance-mode .settings-sidebar,
+.desktop.performance-mode .chat-header,
+.desktop.performance-mode .message-composer,
+.desktop.performance-mode .quick-messages {
+  background-color: rgba(248,248,250,.98) !important;
+}
+.desktop.performance-mode.theme-dark .topbar,
+.desktop.performance-mode.theme-dark .dock,
+.desktop.performance-mode.theme-dark .launcher,
+.desktop.performance-mode.theme-dark .window,
+.desktop.performance-mode.theme-dark .settings-shell,
+.desktop.performance-mode.theme-dark .settings-sidebar,
+.desktop.performance-mode.theme-dark .chat-header,
+.desktop.performance-mode.theme-dark .message-composer,
+.desktop.performance-mode.theme-dark .quick-messages {
+  background-color: #1c1c1f !important;
+}

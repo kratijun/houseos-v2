@@ -31,10 +31,14 @@ const APP_DEFS = {
 const DEFAULT_PREFERENCES = {
   appearance: 'auto', accent: '#007aff', wallpaper: 'bloom', avatar: '',
   notifications: true, sounds: true, largeText: false, highContrast: false,
-  reduceMotion: false, language: 'Deutsch', ambientMode: true,
+  reduceMotion: false, performanceMode: false, language: 'Deutsch', ambientMode: true,
 };
 const loadPreferences = (memberId) => {
-  try { return { ...DEFAULT_PREFERENCES, ...JSON.parse(localStorage.getItem(`houseos.preferences.${memberId}`)) }; }
+  try {
+    const saved = JSON.parse(localStorage.getItem(`houseos.preferences.${memberId}`)) || {};
+    const devicePerformanceMode = localStorage.getItem('houseos.performanceMode');
+    return { ...DEFAULT_PREFERENCES, ...saved, performanceMode: devicePerformanceMode === null ? Boolean(saved.performanceMode) : devicePerformanceMode === 'true' };
+  }
   catch { return { ...DEFAULT_PREFERENCES }; }
 };
 
@@ -625,7 +629,7 @@ function Desktop({ currentMember, onMemberChange, authUsers, onUsersChanged, aut
   const removeTimer = id => setTimers(current => current.filter(timer => timer.id !== id));
   const temp = device.weather?.temperature;
   const resolvedAppearance = preferences.appearance === 'auto' ? (systemDark ? 'dark' : 'light') : preferences.appearance;
-  return <main className={`desktop theme-${resolvedAppearance} wallpaper-${preferences.wallpaper} ${isPhone ? 'phone-layout' : 'tablet-layout'} ${preferences.largeText ? 'large-text' : ''} ${preferences.highContrast ? 'high-contrast' : ''} ${preferences.reduceMotion ? 'reduce-motion' : ''}`} style={{ '--blue': preferences.accent }} onClick={() => launcherOpen && setLauncherOpen(false)}>
+  return <main className={`desktop theme-${resolvedAppearance} wallpaper-${preferences.wallpaper} ${isPhone ? 'phone-layout' : 'tablet-layout'} ${preferences.largeText ? 'large-text' : ''} ${preferences.highContrast ? 'high-contrast' : ''} ${preferences.reduceMotion ? 'reduce-motion' : ''} ${preferences.performanceMode ? 'performance-mode' : ''}`} style={{ '--blue': preferences.accent }} onClick={() => launcherOpen && setLauncherOpen(false)}>
     <div className="ambient ambient-one" /><div className="ambient ambient-two" />
     <header className="topbar">
       <button className="brand" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }}><span className="brand-mark"><Home size={16} /></span><span>house<span>os</span></span></button>
@@ -1337,7 +1341,10 @@ function SettingsApp({ member, onMemberChange, preferences, setPreferences, item
     { label: 'ALLGEMEIN', items: [['general','Allgemein',SlidersHorizontal,'#8e8e93'],['bluetooth','Bluetooth',Bluetooth,'#007aff']] },
     ...(member.isAdmin ? [{ label: 'HOUSEOS ADMIN', items: [['users','Benutzer',Users,'#34c759'],['system','System',Server,'#5856d6'],['updates','Updates',Download,'#007aff']] }] : []),
   ];
-  const updatePreference = (key, value) => setPreferences(current => ({ ...current, [key]: value }));
+  const updatePreference = (key, value) => {
+    if (key === 'performanceMode') localStorage.setItem('houseos.performanceMode', String(Boolean(value)));
+    setPreferences(current => ({ ...current, [key]: value }));
+  };
   const uploadAvatar = async event => { try { const avatar = await prepareAvatar(event.target.files?.[0]); updatePreference('avatar', avatar); notify('Profilbild aktualisiert'); } catch (uploadError) { setError(uploadError.message); } event.target.value = ''; };
   const saveProfile = async event => {
     event.preventDefault(); if (profileName.trim().length < 2) return setError('Bitte gib mindestens zwei Zeichen ein.');
@@ -1401,7 +1408,7 @@ function GeneralSettings({ preferences, updatePreference, member, notify, device
     <h3 className="settings-section-title">Standort und Wetter</h3>
     <form className="settings-card city-settings" onSubmit={saveCity}><div className="settings-row icon-row"><i style={{ '--category': '#34c759' }}><MapPin size={15} /></i><span><strong>Wetterstadt</strong><small>{city ? `Wetter für ${device.location}` : 'Leer lassen für automatische Standorterkennung'}</small></span><input value={city} onChange={event => setCity(event.target.value)} placeholder="z. B. Wien" autoComplete="off" disabled={!member.isAdmin || savingCity} /><button className="settings-save" disabled={!member.isAdmin || savingCity}>{savingCity ? 'Prüfe …' : 'Speichern'}</button></div>{!member.isAdmin && <p className="device-hint">Nur der Haushaltsadmin kann die Wetterstadt ändern.</p>}{cityError && <p className="settings-error">{cityError}</p>}</form>
     <h3 className="settings-section-title">HouseOS</h3>
-    <div className="settings-card"><div className="settings-row icon-row"><i style={{ '--category': '#007aff' }}><Languages size={15} /></i><span><strong>Sprache</strong><small>Sprache der Oberfläche</small></span><select value={preferences.language} onChange={event => updatePreference('language', event.target.value)}><option>Deutsch</option><option>English</option></select></div><SettingSwitch icon={MonitorCog} color="#5e5ce6" title="Ruhe- und Sperrbildschirm" subtitle="Nach einer Minute Informationen anzeigen und Anmeldung verlangen" checked={preferences.ambientMode} onChange={value => updatePreference('ambientMode', value)} /><div className="settings-row icon-row"><i style={{ '--category': '#8e8e93' }}><Info size={15} /></i><span><strong>HouseOS</strong><small>Persönliches Zuhause-Dashboard</small></span><b>Version {packageInfo.version}</b></div><div className="settings-row icon-row"><i style={{ '--category': '#5856d6' }}><KeyRound size={15} /></i><span><strong>PIN & Sicherheit</strong><small>{preferences.ambientMode ? 'Automatische Sperre nach einer Minute' : 'Automatische Sperre nach 15 Minuten'}</small></span><b>Aktiv</b></div></div>
+    <div className="settings-card"><div className="settings-row icon-row"><i style={{ '--category': '#007aff' }}><Languages size={15} /></i><span><strong>Sprache</strong><small>Sprache der Oberfläche</small></span><select value={preferences.language} onChange={event => updatePreference('language', event.target.value)}><option>Deutsch</option><option>English</option></select></div><SettingSwitch icon={Cpu} color="#34c759" title="Performance-Modus" subtitle="Reduziert Effekte und Grafiklast auf dem Raspberry Pi" checked={preferences.performanceMode} onChange={value => { updatePreference('performanceMode', value); notify(value ? 'Performance-Modus aktiviert' : 'Performance-Modus deaktiviert'); }} /><SettingSwitch icon={MonitorCog} color="#5e5ce6" title="Ruhe- und Sperrbildschirm" subtitle="Nach einer Minute Informationen anzeigen und Anmeldung verlangen" checked={preferences.ambientMode} onChange={value => updatePreference('ambientMode', value)} /><div className="settings-row icon-row"><i style={{ '--category': '#8e8e93' }}><Info size={15} /></i><span><strong>HouseOS</strong><small>Persönliches Zuhause-Dashboard</small></span><b>Version {packageInfo.version}</b></div><div className="settings-row icon-row"><i style={{ '--category': '#5856d6' }}><KeyRound size={15} /></i><span><strong>PIN & Sicherheit</strong><small>{preferences.ambientMode ? 'Automatische Sperre nach einer Minute' : 'Automatische Sperre nach 15 Minuten'}</small></span><b>Aktiv</b></div></div>
   </section>;
 }
 
