@@ -28,13 +28,20 @@ jobs:
           rsync -a --exclude node_modules --exclude data --exclude .git --exclude release ./ release/
           tar -czf "houseos-${VERSION}.tar.gz" -C release .
           sha256sum "houseos-${VERSION}.tar.gz" >"houseos-${VERSION}.tar.gz.sha256"
-      - name: Create GitHub release
+      - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          gh release create "${GITHUB_REF_NAME}" \
-            "houseos-${VERSION}.tar.gz" \
-            "houseos-${VERSION}.tar.gz.sha256" \
-            --generate-notes \
-            --title "HouseOS ${VERSION}"
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" \
+              "houseos-${VERSION}.tar.gz" \
+              "houseos-${VERSION}.tar.gz.sha256" \
+              --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              "houseos-${VERSION}.tar.gz" \
+              "houseos-${VERSION}.tar.gz.sha256" \
+              --generate-notes \
+              --title "HouseOS ${VERSION}"
+          fi
