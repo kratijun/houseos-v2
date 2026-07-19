@@ -626,6 +626,7 @@ function MessagesApp({ currentMember, notify }) {
   const [conversations, setConversations] = useState([]);
   const [selectedId, setSelectedId] = useState(requestedMember || 'family');
   const [messages, setMessages] = useState([]);
+  const [typingMembers, setTypingMembers] = useState([]);
   const [draft, setDraft] = useState('');
   const [photo, setPhoto] = useState(null);
   const [reactionMenu, setReactionMenu] = useState(null);
@@ -635,6 +636,7 @@ function MessagesApp({ currentMember, notify }) {
   const [error, setError] = useState('');
   const endRef = useRef(null);
   const photoInputRef = useRef(null);
+  const typingTimerRef = useRef(null);
 
   const refreshConversations = useCallback(async () => {
     const response = await fetch('/api/messages/conversations', { cache: 'no-store' });
@@ -653,6 +655,7 @@ function MessagesApp({ currentMember, notify }) {
     if (!response.ok) throw new Error((await response.json().catch(() => null))?.error || 'Nachrichten konnten nicht geladen werden.');
     const result = await response.json();
     setMessages(result.messages || []);
+    setTypingMembers(result.typing || []);
     if (markRead) {
       await fetch(`/api/messages/${memberId}/read`, { method: 'POST' });
       await refreshConversations();
@@ -670,16 +673,30 @@ function MessagesApp({ currentMember, notify }) {
     setError('');
     loadMessages(selectedId).catch(error => setError(error.message));
     const url = new URL(window.location.href); url.searchParams.set('app', 'messages'); url.searchParams.set('with', selectedId); window.history.replaceState({}, '', url);
-    const interval = setInterval(() => loadMessages(selectedId).catch(() => {}), 3500);
+    const interval = setInterval(() => loadMessages(selectedId, false).catch(() => {}), 1500);
     return () => clearInterval(interval);
   }, [selectedId, loadMessages]);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }); }, [messages.length, selectedId]);
+  const postTyping = useCallback((typing, conversationId = selectedId) => {
+    if (!conversationId) return;
+    fetch('/api/messages/typing', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ family: conversationId === 'family', recipientId: conversationId === 'family' ? undefined : Number(conversationId), typing }) }).catch(() => {});
+  }, [selectedId]);
+
+  useEffect(() => () => { clearTimeout(typingTimerRef.current); postTyping(false, selectedId); }, [selectedId, postTyping]);
+  useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }); }, [messages.length, selectedId, typingMembers.length]);
+
+  const updateDraft = value => {
+    setDraft(value); clearTimeout(typingTimerRef.current);
+    if (!value.trim()) { postTyping(false); return; }
+    postTyping(true);
+    typingTimerRef.current = setTimeout(() => postTyping(false), 2_200);
+  };
 
   const sendMessage = async event => {
     event?.preventDefault();
     const body = draft.trim();
     if ((!body && !photo) || !selectedId || sending) return;
+    clearTimeout(typingTimerRef.current); postTyping(false);
     setSending(true); setError('');
     try {
       const response = await fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recipientId: selectedId === 'family' ? undefined : Number(selectedId), family: selectedId === 'family', body, image: photo?.dataUrl }) });
@@ -706,6 +723,7 @@ function MessagesApp({ currentMember, notify }) {
   const selected = conversations.find(member => String(member.id) === String(selectedId));
   const formatMessageTime = value => new Date(`${value.replace(' ', 'T')}Z`).toLocaleString('de-DE', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
   const latestOwnId = [...messages].reverse().find(message => message.senderId === currentMember.id)?.id;
+  const typingLabel = typingMembers.length === 1 ? `${typingMembers[0].name} schreibt …` : typingMembers.length === 2 ? `${typingMembers[0].name} und ${typingMembers[1].name} schreiben …` : `${typingMembers.length} Personen schreiben …`;
 
   return <div className="messages-app">
     <aside className={`conversation-sidebar ${selected ? 'has-selection' : ''}`}>
@@ -728,9 +746,9 @@ function MessagesApp({ currentMember, notify }) {
             <div className="message-reactions">{message.reactions?.map(item => <button type="button" className={item.reactedByMe ? 'mine' : ''} key={item.emoji} onClick={() => toggleReaction(message, item.emoji)}>{item.emoji}<b>{item.count}</b></button>)}<button type="button" className="reaction-add" onClick={() => setReactionMenu(reactionMenu === `${message.kind}-${message.id}` ? null : `${message.kind}-${message.id}`)} aria-label="Reaktion hinzufügen"><Smile size={13} /></button>{reactionMenu === `${message.kind}-${message.id}` && <span className="reaction-picker">{CHAT_REACTIONS.map(emoji => <button type="button" key={emoji} onClick={() => toggleReaction(message, emoji)}>{emoji}</button>)}</span>}</div>
             {own && message.id === latestOwnId && <small className="read-receipt">{message.readAt ? 'Gelesen' : 'Gesendet'}</small>}
           </div>;
-        })}<div ref={endRef} /></div>
-        <div className="quick-messages" aria-label="Schnellnachrichten">{QUICK_MESSAGES.map(text => <button type="button" key={text} onClick={() => setDraft(text)}>{text}</button>)}</div>
-        <form className="message-composer" onSubmit={sendMessage}>{photo && <div className="photo-preview"><img src={photo.dataUrl} alt="Ausgewähltes Foto" /><span>{photo.name}</span><button type="button" onClick={() => setPhoto(null)} aria-label="Foto entfernen"><X size={14} /></button></div>}<input ref={photoInputRef} className="chat-photo-input" type="file" accept="image/jpeg,image/png,image/webp" onChange={choosePhoto} /><button className="photo-button" type="button" onClick={() => photoInputRef.current?.click()} aria-label="Foto auswählen"><Camera size={19} /></button><textarea value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} maxLength={1000} rows={1} placeholder={`Nachricht an ${selected.name} …`} /><button className="send-button" type="submit" disabled={(!draft.trim() && !photo) || sending} aria-label="Nachricht senden">{sending ? <LoaderCircle className="spin" size={19} /> : <Send size={19} />}</button></form>
+        })}{typingMembers.length > 0 && <div className="typing-indicator"><span><i /><i /><i /></span><small>{typingLabel}</small></div>}<div ref={endRef} /></div>
+        <div className="quick-messages" aria-label="Schnellnachrichten">{QUICK_MESSAGES.map(text => <button type="button" key={text} onClick={() => updateDraft(text)}>{text}</button>)}</div>
+        <form className="message-composer" onSubmit={sendMessage}>{photo && <div className="photo-preview"><img src={photo.dataUrl} alt="Ausgewähltes Foto" /><span>{photo.name}</span><button type="button" onClick={() => setPhoto(null)} aria-label="Foto entfernen"><X size={14} /></button></div>}<input ref={photoInputRef} className="chat-photo-input" type="file" accept="image/jpeg,image/png,image/webp" onChange={choosePhoto} /><button className="photo-button" type="button" onClick={() => photoInputRef.current?.click()} aria-label="Foto auswählen"><Camera size={19} /></button><textarea value={draft} onChange={event => updateDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} maxLength={1000} rows={1} placeholder={`Nachricht an ${selected.name} …`} /><button className="send-button" type="submit" disabled={(!draft.trim() && !photo) || sending} aria-label="Nachricht senden">{sending ? <LoaderCircle className="spin" size={19} /> : <Send size={19} />}</button></form>
       </> : <div className="chat-placeholder"><MessageCircle size={38} /><strong>Deine Nachrichten</strong><p>Wähle ein Haushaltsmitglied aus und sag kurz Hallo.</p></div>}
       {error && <p className="chat-error">{error}</p>}
     </section>

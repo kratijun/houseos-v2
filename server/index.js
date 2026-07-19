@@ -353,6 +353,28 @@ const familyMessageRow = `
          sender.name AS senderName, sender.color AS senderColor
   FROM family_messages msg JOIN members sender ON sender.id = msg.sender_id
 `;
+const typingStates = new Map();
+const directConversationKey = (firstId, secondId) => `direct:${[Number(firstId), Number(secondId)].sort((a, b) => a - b).join(':')}`;
+const typingMembers = (conversationKey, currentMemberId) => {
+  const now = Date.now(); const memberIds = [];
+  for (const [memberId, state] of typingStates) {
+    if (state.expiresAt <= now) { typingStates.delete(memberId); continue; }
+    if (memberId !== currentMemberId && state.conversationKey === conversationKey) memberIds.push(memberId);
+  }
+  if (!memberIds.length) return [];
+  const placeholders = memberIds.map(() => '?').join(',');
+  return db.prepare(`SELECT id, name, color FROM members WHERE id IN (${placeholders}) ORDER BY lower(name)`).all(...memberIds);
+};
+
+app.post('/api/messages/typing', requireAuth, (req, res) => {
+  const family = req.body?.family === true;
+  const recipientId = Number(req.body?.recipientId);
+  if (!family && !db.prepare('SELECT id FROM members WHERE id = ? AND id <> ?').get(recipientId, req.member.id)) return res.status(404).json({ error: 'Empfänger nicht gefunden.' });
+  const conversationKey = family ? 'family' : directConversationKey(req.member.id, recipientId);
+  if (req.body?.typing === true) typingStates.set(req.member.id, { conversationKey, expiresAt: Date.now() + 5_000 });
+  else if (typingStates.get(req.member.id)?.conversationKey === conversationKey) typingStates.delete(req.member.id);
+  res.json({ ok: true });
+});
 
 app.get('/api/messages/conversations', requireAuth, (req, res) => {
   const members = db.prepare(`
@@ -372,7 +394,7 @@ app.get('/api/messages/conversations', requireAuth, (req, res) => {
 
 app.get('/api/messages/family', requireAuth, (req, res) => {
   const messages = db.prepare(`${familyMessageRow} ORDER BY msg.id DESC LIMIT 200`).all().reverse().map(row => serializeMessage(row, 'family', req.member.id));
-  res.json({ member: { id: 'family', name: 'Familienchat', role: 'Alle zusammen', color: '#ff9f0a' }, messages });
+  res.json({ member: { id: 'family', name: 'Familienchat', role: 'Alle zusammen', color: '#ff9f0a' }, messages, typing: typingMembers('family', req.member.id) });
 });
 
 app.post('/api/messages/family/read', requireAuth, (req, res) => {
@@ -388,7 +410,7 @@ app.get('/api/messages/:memberId', requireAuth, (req, res) => {
   if (!other) return res.status(404).json({ error: 'Mitglied nicht gefunden.' });
   const messages = db.prepare(`${messageRow} WHERE (msg.sender_id = ? AND msg.recipient_id = ?) OR (msg.sender_id = ? AND msg.recipient_id = ?) ORDER BY msg.id DESC LIMIT 200`)
     .all(req.member.id, otherId, otherId, req.member.id).reverse().map(row => serializeMessage(row, 'direct', req.member.id));
-  res.json({ member: other, messages });
+  res.json({ member: other, messages, typing: typingMembers(directConversationKey(req.member.id, otherId), req.member.id) });
 });
 
 app.post('/api/messages', requireAuth, (req, res) => {
