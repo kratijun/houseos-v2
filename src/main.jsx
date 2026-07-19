@@ -524,6 +524,28 @@ function usePhoneLayout() {
   return isPhone;
 }
 
+const detectTabletKeyboardLayout = () => {
+  if (detectPhoneLayout()) return false;
+  const shortestViewport = Math.min(window.innerWidth, window.innerHeight);
+  const compactTabletViewport = shortestViewport > 560 && window.innerWidth <= 1100;
+  const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches;
+  const finePointer = window.matchMedia?.('(pointer: fine)').matches;
+  const touchFirstDevice = navigator.maxTouchPoints > 0 && !finePointer;
+  const raspberryPi = /(?:aarch64|armv\d+l)/i.test(`${navigator.userAgent} ${navigator.platform}`);
+  return Boolean(compactTabletViewport || coarsePointer || touchFirstDevice || raspberryPi);
+};
+
+function useTabletKeyboardLayout() {
+  const [isTabletKeyboard, setIsTabletKeyboard] = useState(detectTabletKeyboardLayout);
+  useEffect(() => {
+    const update = () => setIsTabletKeyboard(detectTabletKeyboardLayout());
+    window.addEventListener('resize', update);
+    window.addEventListener('orientationchange', update);
+    return () => { window.removeEventListener('resize', update); window.removeEventListener('orientationchange', update); };
+  }, []);
+  return isTabletKeyboard;
+}
+
 function Desktop({ currentMember, onMemberChange, authUsers, onUsersChanged, authError, setAuthError }) {
   const initialWorkspace = useMemo(() => loadWorkspace(currentMember.id), [currentMember.id]);
   const [time, setTime] = useState(new Date());
@@ -1568,9 +1590,9 @@ function OnScreenKeyboard() {
   const [target, setTarget] = useState(null); const [shift, setShift] = useState(false);
   const preserveFocus = useRef(false);
   const virtualPointer = useRef(false);
-  const isPhone = usePhoneLayout();
+  const isTabletKeyboard = useTabletKeyboardLayout();
   useEffect(() => {
-    if (isPhone) { setTarget(null); return; }
+    if (!isTabletKeyboard) { setTarget(null); return; }
     const editable = element => element instanceof HTMLTextAreaElement || (element instanceof HTMLInputElement && !['button','checkbox','color','date','datetime-local','file','hidden','month','radio','range','reset','submit','time','week'].includes(element.type) && !element.readOnly && !element.disabled && !element.dataset.noVirtualKeyboard);
     const openFor = element => {
       if (!editable(element)) return;
@@ -1589,8 +1611,7 @@ function OnScreenKeyboard() {
         setTimeout(() => { preserveFocus.current = false; }, 0);
         return;
       }
-      virtualPointer.current = ['touch', 'pen'].includes(event.pointerType) || (!event.pointerType && window.matchMedia?.('(pointer: coarse)').matches);
-      if (!virtualPointer.current) { setTarget(null); return; }
+      virtualPointer.current = true;
       if (!editable(event.target)) return;
       if (event.target.closest?.('.meal-editor') && document.activeElement !== event.target) {
         event.preventDefault();
@@ -1602,8 +1623,8 @@ function OnScreenKeyboard() {
     const focusOut = event => { if (!preserveFocus.current && !event.relatedTarget?.closest?.('.screen-keyboard, [data-preserve-keyboard]')) setTimeout(() => { if (!document.activeElement?.closest?.('[data-preserve-keyboard]') && !editable(document.activeElement)) setTarget(null); }, 0); };
     document.addEventListener('pointerdown', pointerDown, true); document.addEventListener('keydown', physicalKeyDown, true); document.addEventListener('focusin', focusIn); document.addEventListener('focusout', focusOut);
     return () => { document.removeEventListener('pointerdown', pointerDown, true); document.removeEventListener('keydown', physicalKeyDown, true); document.removeEventListener('focusin', focusIn); document.removeEventListener('focusout', focusOut); };
-  }, [isPhone]);
-  if (isPhone) return null;
+  }, [isTabletKeyboard]);
+  if (!isTabletKeyboard) return null;
   if (!target?.isConnected) return null;
   const isNumeric = ['number','tel'].includes(target.type) || target.inputMode === 'numeric' || target.inputMode === 'decimal';
   const updateValue = (value, cursor) => {
