@@ -101,6 +101,38 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    recipient_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 1000),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    read_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS messages_conversation_idx ON messages (sender_id, recipient_id, id);
+  CREATE INDEX IF NOT EXISTS messages_unread_idx ON messages (recipient_id, read_at, id);
+  CREATE TABLE IF NOT EXISTS family_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    body TEXT NOT NULL DEFAULT '',
+    attachment_path TEXT NOT NULL DEFAULT '',
+    attachment_type TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CHECK (length(body) BETWEEN 0 AND 1000),
+    CHECK (length(body) > 0 OR length(attachment_path) > 0)
+  );
+  CREATE TABLE IF NOT EXISTS family_read_state (
+    member_id INTEGER PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
+    last_read_message_id INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS message_reactions (
+    message_kind TEXT NOT NULL CHECK (message_kind IN ('direct', 'family')),
+    message_id INTEGER NOT NULL,
+    member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    emoji TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (message_kind, message_id, member_id, emoji)
+  );
 `);
 
 const ensureColumn = (table, column, definition) => {
@@ -111,6 +143,8 @@ ensureColumn('members', 'pin_hash', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('tasks', 'due_date', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('tasks', 'recurrence', "TEXT NOT NULL DEFAULT 'none'");
 ensureColumn('shopping', 'quantity', "TEXT NOT NULL DEFAULT '1 Stück'");
+ensureColumn('messages', 'attachment_path', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('messages', 'attachment_type', "TEXT NOT NULL DEFAULT ''");
 
 const seed = db.transaction(() => {
   if (!db.prepare('SELECT COUNT(*) AS count FROM members').get().count) {
@@ -136,7 +170,7 @@ db.prepare("INSERT OR IGNORE INTO print_settings (id, printer_name, paper_width,
 db.prepare("INSERT OR IGNORE INTO device_settings (id, weather_city) VALUES (1, '')").run();
 
 const app = express();
-app.use(express.json({ limit: '256kb' }));
+app.use(express.json({ limit: '3mb' }));
 
 const vapidPath = path.join(dataDir, 'push-vapid.json');
 const loadVapidKeys = () => {
@@ -274,6 +308,149 @@ app.post('/api/push/test', requireAuth, async (req, res) => {
   if (!subscription) return res.status(404).json({ error: 'Dieses Gerät ist nicht für Mitteilungen registriert.' });
   await sendPush({ title: 'HouseOS Mitteilungen', body: 'Benachrichtigungen funktionieren auf diesem Gerät.', tag: 'houseos-test', url: '/?app=today', icon: '/icons/houseos-192.png' }, { memberName: req.member.name, endpoint });
   res.json({ ok: true });
+});
+
+const messageMediaDir = path.join(dataDir, 'message-media');
+fs.mkdirSync(messageMediaDir, { recursive: true });
+const reactionEmojis = new Set(['❤️', '👍', '😂', '🥰', '🎉']);
+const storeMessageImage = value => {
+  if (!value) return { attachmentPath: '', attachmentType: '' };
+  const match = String(value).match(/^data:(image\/(?:jpeg|png|webp));base64,([a-z0-9+/=]+)$/i);
+  if (!match) throw Object.assign(new Error('Dieses Bildformat wird nicht unterstützt.'), { status: 400 });
+  const buffer = Buffer.from(match[2], 'base64');
+  if (!buffer.length || buffer.length > 1_500_000) throw Object.assign(new Error('Das Foto darf höchstens 1,5 MB groß sein.'), { status: 413 });
+  const validMagic = match[1] === 'image/jpeg' ? buffer[0] === 0xff && buffer[1] === 0xd8
+    : match[1] === 'image/png' ? buffer.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))
+    : buffer.subarray(8, 12).toString() === 'WEBP';
+  if (!validMagic) throw Object.assign(new Error('Die Bilddatei ist beschädigt.'), { status: 400 });
+  const extension = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[match[1]];
+  const attachmentPath = `${randomBytes(24).toString('hex')}.${extension}`;
+  fs.writeFileSync(path.join(messageMediaDir, attachmentPath), buffer, { flag: 'wx', mode: 0o600 });
+  return { attachmentPath, attachmentType: match[1] };
+};
+const removeStoredImage = attachmentPath => { if (attachmentPath) try { fs.unlinkSync(path.join(messageMediaDir, attachmentPath)); } catch {} };
+const reactionsFor = (kind, messageId, currentMemberId) => db.prepare(`
+  SELECT r.emoji, COUNT(*) AS count,
+         MAX(CASE WHEN r.member_id = ? THEN 1 ELSE 0 END) AS reactedByMe
+  FROM message_reactions r WHERE r.message_kind = ? AND r.message_id = ? GROUP BY r.emoji ORDER BY MIN(r.created_at)
+`).all(currentMemberId, kind, messageId).map(item => ({ ...item, count: Number(item.count), reactedByMe: Boolean(item.reactedByMe) }));
+const serializeMessage = (row, kind, currentMemberId) => ({
+  ...row, kind,
+  attachmentUrl: row.attachmentPath ? `/api/message-media/${row.attachmentPath}` : '',
+  reactions: reactionsFor(kind, row.id, currentMemberId),
+});
+const messageRow = `
+  SELECT msg.id, msg.sender_id AS senderId, msg.recipient_id AS recipientId,
+         msg.body, msg.attachment_path AS attachmentPath, msg.attachment_type AS attachmentType,
+         msg.created_at AS createdAt, msg.read_at AS readAt,
+         sender.name AS senderName, sender.color AS senderColor
+  FROM messages msg JOIN members sender ON sender.id = msg.sender_id
+`;
+const familyMessageRow = `
+  SELECT msg.id, msg.sender_id AS senderId, NULL AS recipientId,
+         msg.body, msg.attachment_path AS attachmentPath, msg.attachment_type AS attachmentType,
+         msg.created_at AS createdAt, NULL AS readAt,
+         sender.name AS senderName, sender.color AS senderColor
+  FROM family_messages msg JOIN members sender ON sender.id = msg.sender_id
+`;
+
+app.get('/api/messages/conversations', requireAuth, (req, res) => {
+  const members = db.prepare(`
+    SELECT m.id, m.name, m.role, m.color,
+      (SELECT CASE WHEN length(x.body) THEN x.body ELSE '📷 Foto' END FROM messages x WHERE (x.sender_id = ? AND x.recipient_id = m.id) OR (x.sender_id = m.id AND x.recipient_id = ?) ORDER BY x.id DESC LIMIT 1) AS lastMessage,
+      (SELECT created_at FROM messages x WHERE (x.sender_id = ? AND x.recipient_id = m.id) OR (x.sender_id = m.id AND x.recipient_id = ?) ORDER BY x.id DESC LIMIT 1) AS lastMessageAt,
+      (SELECT COUNT(*) FROM messages x WHERE x.sender_id = m.id AND x.recipient_id = ? AND x.read_at IS NULL) AS unreadCount
+    FROM members m WHERE m.id <> ? ORDER BY lastMessageAt IS NULL, lastMessageAt DESC, lower(m.name)
+  `).all(req.member.id, req.member.id, req.member.id, req.member.id, req.member.id, req.member.id);
+  const familyLast = db.prepare("SELECT CASE WHEN length(body) THEN body ELSE '📷 Foto' END AS lastMessage, created_at AS lastMessageAt FROM family_messages ORDER BY id DESC LIMIT 1").get() || {};
+  const familyRead = db.prepare('SELECT last_read_message_id AS lastReadId FROM family_read_state WHERE member_id = ?').get(req.member.id)?.lastReadId || 0;
+  const familyUnread = db.prepare('SELECT COUNT(*) AS count FROM family_messages WHERE id > ? AND sender_id <> ?').get(familyRead, req.member.id).count;
+  const family = { id: 'family', name: 'Familienchat', role: 'Alle zusammen', color: '#ff9f0a', ...familyLast, unreadCount: Number(familyUnread) };
+  const directUnread = members.reduce((sum, member) => sum + Number(member.unreadCount), 0);
+  res.json({ family, members: members.map(member => ({ ...member, unreadCount: Number(member.unreadCount) })), unreadCount: directUnread + family.unreadCount });
+});
+
+app.get('/api/messages/family', requireAuth, (req, res) => {
+  const messages = db.prepare(`${familyMessageRow} ORDER BY msg.id DESC LIMIT 200`).all().reverse().map(row => serializeMessage(row, 'family', req.member.id));
+  res.json({ member: { id: 'family', name: 'Familienchat', role: 'Alle zusammen', color: '#ff9f0a' }, messages });
+});
+
+app.post('/api/messages/family/read', requireAuth, (req, res) => {
+  const lastId = db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM family_messages').get().id;
+  db.prepare(`INSERT INTO family_read_state (member_id, last_read_message_id) VALUES (?, ?)
+    ON CONFLICT(member_id) DO UPDATE SET last_read_message_id = MAX(last_read_message_id, excluded.last_read_message_id)`).run(req.member.id, lastId);
+  res.json({ ok: true, lastReadId: lastId });
+});
+
+app.get('/api/messages/:memberId', requireAuth, (req, res) => {
+  const otherId = Number(req.params.memberId);
+  const other = db.prepare('SELECT id, name, role, color FROM members WHERE id = ? AND id <> ?').get(otherId, req.member.id);
+  if (!other) return res.status(404).json({ error: 'Mitglied nicht gefunden.' });
+  const messages = db.prepare(`${messageRow} WHERE (msg.sender_id = ? AND msg.recipient_id = ?) OR (msg.sender_id = ? AND msg.recipient_id = ?) ORDER BY msg.id DESC LIMIT 200`)
+    .all(req.member.id, otherId, otherId, req.member.id).reverse().map(row => serializeMessage(row, 'direct', req.member.id));
+  res.json({ member: other, messages });
+});
+
+app.post('/api/messages', requireAuth, (req, res) => {
+  const family = req.body?.family === true;
+  const recipientId = Number(req.body?.recipientId);
+  const typedBody = String(req.body?.body || '').trim();
+  if (typedBody.length > 1000) return res.status(400).json({ error: 'Die Nachricht darf höchstens 1.000 Zeichen lang sein.' });
+  let attachment;
+  try { attachment = storeMessageImage(req.body?.image); }
+  catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+  if (!typedBody && !attachment.attachmentPath) return res.status(400).json({ error: 'Schreibe eine Nachricht oder wähle ein Foto aus.' });
+  try {
+    if (family) {
+      const result = db.prepare('INSERT INTO family_messages (sender_id, body, attachment_path, attachment_type) VALUES (?, ?, ?, ?)').run(req.member.id, typedBody, attachment.attachmentPath, attachment.attachmentType);
+      const message = serializeMessage(db.prepare(`${familyMessageRow} WHERE msg.id = ?`).get(result.lastInsertRowid), 'family', req.member.id);
+      const preview = typedBody || '📷 hat ein Foto geteilt.';
+      void sendPush({ title: `${req.member.name} im Familienchat`, body: preview.length > 120 ? `${preview.slice(0, 117)}…` : preview, tag: 'messages-family', url: '/?app=messages&with=family', icon: '/icons/houseos-192.png' }, { excludeMemberId: req.member.id });
+      return res.status(201).json(message);
+    }
+    const recipient = db.prepare('SELECT id, name FROM members WHERE id = ? AND id <> ?').get(recipientId, req.member.id);
+    if (!recipient) { removeStoredImage(attachment.attachmentPath); return res.status(404).json({ error: 'Empfänger nicht gefunden.' }); }
+    const storedBody = typedBody || '📷 Foto';
+    const result = db.prepare('INSERT INTO messages (sender_id, recipient_id, body, attachment_path, attachment_type) VALUES (?, ?, ?, ?, ?)').run(req.member.id, recipient.id, storedBody, attachment.attachmentPath, attachment.attachmentType);
+    const message = serializeMessage(db.prepare(`${messageRow} WHERE msg.id = ?`).get(result.lastInsertRowid), 'direct', req.member.id);
+    const preview = typedBody || '📷 hat dir ein Foto geschickt.';
+    void sendPush({ title: `Nachricht von ${req.member.name}`, body: preview.length > 120 ? `${preview.slice(0, 117)}…` : preview, tag: `messages-${req.member.id}`, url: `/?app=messages&with=${req.member.id}`, icon: '/icons/houseos-192.png' }, { memberName: recipient.name });
+    res.status(201).json(message);
+  } catch (error) {
+    removeStoredImage(attachment.attachmentPath);
+    console.error('Nachricht konnte nicht gespeichert werden:', error);
+    res.status(500).json({ error: 'Nachricht konnte nicht gespeichert werden.' });
+  }
+});
+
+app.post('/api/messages/:memberId/read', requireAuth, (req, res) => {
+  const result = db.prepare("UPDATE messages SET read_at = CURRENT_TIMESTAMP WHERE sender_id = ? AND recipient_id = ? AND read_at IS NULL").run(Number(req.params.memberId), req.member.id);
+  res.json({ ok: true, changed: result.changes });
+});
+
+app.post('/api/messages/:kind/:messageId/reactions', requireAuth, (req, res) => {
+  const kind = String(req.params.kind);
+  const messageId = Number(req.params.messageId);
+  const emoji = String(req.body?.emoji || '');
+  if (!['direct', 'family'].includes(kind) || !reactionEmojis.has(emoji)) return res.status(400).json({ error: 'Ungültige Reaktion.' });
+  const allowed = kind === 'family'
+    ? db.prepare('SELECT id FROM family_messages WHERE id = ?').get(messageId)
+    : db.prepare('SELECT id FROM messages WHERE id = ? AND (sender_id = ? OR recipient_id = ?)').get(messageId, req.member.id, req.member.id);
+  if (!allowed) return res.status(404).json({ error: 'Nachricht nicht gefunden.' });
+  const existing = db.prepare('SELECT 1 FROM message_reactions WHERE message_kind = ? AND message_id = ? AND member_id = ? AND emoji = ?').get(kind, messageId, req.member.id, emoji);
+  if (existing) db.prepare('DELETE FROM message_reactions WHERE message_kind = ? AND message_id = ? AND member_id = ? AND emoji = ?').run(kind, messageId, req.member.id, emoji);
+  else db.prepare('INSERT INTO message_reactions (message_kind, message_id, member_id, emoji) VALUES (?, ?, ?, ?)').run(kind, messageId, req.member.id, emoji);
+  res.json({ reactions: reactionsFor(kind, messageId, req.member.id) });
+});
+
+app.get('/api/message-media/:filename', requireAuth, (req, res) => {
+  const filename = String(req.params.filename);
+  if (!/^[a-f0-9]{48}\.(?:jpg|png|webp)$/.test(filename)) return res.status(404).end();
+  const direct = db.prepare('SELECT attachment_type AS type FROM messages WHERE attachment_path = ? AND (sender_id = ? OR recipient_id = ?)').get(filename, req.member.id, req.member.id);
+  const family = direct ? null : db.prepare('SELECT attachment_type AS type FROM family_messages WHERE attachment_path = ?').get(filename);
+  const media = direct || family;
+  if (!media) return res.status(404).end();
+  res.type(media.type).sendFile(path.join(messageMediaDir, filename));
 });
 
 app.get('/api/auth/users', (_req, res) => {

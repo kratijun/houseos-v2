@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   Check, CheckCircle2, ChevronLeft, ChevronRight, ChevronUp, Circle, Clock3, CloudSun, Command,
@@ -11,7 +11,7 @@ import {
   Power, PowerOff, Lock, AlertTriangle, ExternalLink, Pause, Play, Bluetooth,
   Speaker, Headphones, Keyboard, MousePointer2, MoreHorizontal, LoaderCircle,
   Trophy, Flame, Award, CalendarDays, Utensils, Heart, Cookie, Gamepad2,
-  BedDouble, Shirt, Star, Gift, Smile,
+  BedDouble, Shirt, Star, Gift, Smile, PawPrint, MessageCircle, Send,
 } from 'lucide-react';
 import packageInfo from '../package.json';
 import './styles.css';
@@ -22,6 +22,7 @@ const APP_DEFS = {
   tasks: { title: 'Aufgaben', icon: ListTodo, color: '#30b67a', keywords: 'todo erledigen termin zeit wiederholung' },
   shopping: { title: 'Einkauf', icon: ShoppingBasket, color: '#ff6259', keywords: 'liste artikel kategorie' },
   meals: { title: 'Speiseplan', icon: Utensils, color: '#af52de', keywords: 'essen rezepte woche frühstück mittag abend zutaten' },
+  messages: { title: 'Chats', icon: MessageCircle, color: '#0a84ff', keywords: 'nachrichten chat familie mitglieder schreiben' },
   printer: { title: 'Print Center', icon: Printer, color: '#667eea', keywords: 'bon drucken vorschau' },
   settings: { title: 'Einstellungen', icon: Settings, color: '#636366', keywords: 'admin benutzer profil pin system update version github' },
 };
@@ -93,21 +94,35 @@ const THOUGHTS = [
   'Heute zählt, was euch den Alltag ein kleines Stück leichter macht.',
   'Zuhause ist kein Projekt. Es ist ein Gefühl, das wachsen darf.',
 ];
-const PET_MESSAGES = name => [`Hallo ${name}!`, 'Du machst das großartig!', 'Zeit für eine kleine Kuschelpause?', 'Ich passe auf HouseOS auf.', 'High Five! 🐾'];
+const PET_MESSAGES = name => [`Hallo ${name}!`, 'Du machst das großartig!', 'Zeit für eine kleine Kuschelpause?', 'Ich passe auf HouseOS auf.', 'High Five!'];
 const DEFAULT_PET_STATE = { fullness: 78, joy: 82, energy: 74, love: 55, xp: 0, sleeping: false, sleepStarted: null, outfits: [], busyUntil: 0, busyType: '', lastUpdated: Date.now() };
 const PET_OUTFITS = [
-  { id: 'none', label: 'Ohne', emoji: '🧸', level: 1 },
-  { id: 'scarf', label: 'Schal', emoji: '🧣', level: 2 },
-  { id: 'bow', label: 'Masche', emoji: '🎀', points: 15 },
-  { id: 'pajamas', label: 'Pyjama', emoji: '🌙', level: 3 },
-  { id: 'crown', label: 'Krone', emoji: '👑', points: 40 },
+  { id: 'none', label: 'Ohne', icon: Circle, level: 1 },
+  { id: 'scarf', label: 'Schal', icon: Shirt, level: 2 },
+  { id: 'bow', label: 'Masche', icon: Sparkles, points: 15 },
+  { id: 'pajamas', label: 'Pyjama', icon: Moon, level: 3 },
+  { id: 'crown', label: 'Krone', icon: Award, points: 40 },
 ];
 const clampPetValue = value => Math.max(0, Math.min(100, Math.round(value)));
 const petLevel = xp => Math.min(9, Math.floor(Math.max(0, xp || 0) / 45) + 1);
 const agePetState = state => {
-  const now = Date.now(); const elapsedHours = Math.max(0, now - (state.lastUpdated || now)) / 3_600_000;
-  if (elapsedHours < .01) return { ...DEFAULT_PET_STATE, ...state, busyUntil: state.busyUntil > now ? state.busyUntil : 0, busyType: state.busyUntil > now ? state.busyType : '' };
-  return { ...DEFAULT_PET_STATE, ...state, fullness: clampPetValue(state.fullness - elapsedHours * 4), joy: clampPetValue(state.joy - elapsedHours * (state.sleeping ? .4 : 2.5)), energy: clampPetValue(state.energy + elapsedHours * (state.sleeping ? 22 : -2)), love: clampPetValue(state.love - elapsedHours * .6), busyUntil: state.busyUntil > now ? state.busyUntil : 0, busyType: state.busyUntil > now ? state.busyType : '', lastUpdated: now };
+  const now = Date.now();
+  const current = { ...DEFAULT_PET_STATE, ...state };
+  const elapsedHours = Math.max(0, now - (current.lastUpdated || now)) / 3_600_000;
+  const energy = elapsedHours < .01 ? clampPetValue(current.energy) : clampPetValue(current.energy + elapsedHours * (current.sleeping ? 22 : -2));
+  const fullyRested = current.sleeping && energy >= 100;
+  return {
+    ...current,
+    fullness: elapsedHours < .01 ? clampPetValue(current.fullness) : clampPetValue(current.fullness - elapsedHours * 4),
+    joy: elapsedHours < .01 ? clampPetValue(current.joy) : clampPetValue(current.joy - elapsedHours * (current.sleeping ? .4 : 2.5)),
+    energy,
+    love: elapsedHours < .01 ? clampPetValue(current.love) : clampPetValue(current.love - elapsedHours * .6),
+    sleeping: fullyRested ? false : current.sleeping,
+    sleepStarted: fullyRested ? null : current.sleepStarted,
+    busyUntil: current.busyUntil > now ? current.busyUntil : 0,
+    busyType: current.busyUntil > now ? current.busyType : '',
+    lastUpdated: elapsedHours < .01 ? current.lastUpdated : now,
+  };
 };
 const loadPetState = memberId => {
   try {
@@ -465,6 +480,7 @@ function Desktop({ currentMember, onMemberChange, authUsers, onUsersChanged, aut
   const [timers, setTimers] = useState(loadKitchenTimers);
   const [timerNow, setTimerNow] = useState(Date.now());
   const [installPrompt, setInstallPrompt] = useState(null);
+  const [messageUnreadCount, setMessageUnreadCount] = useState(0);
   const isPhone = usePhoneLayout();
   const [tasks, setTasks, tasksOnline] = useDatabaseCollection('tasks', defaultTasks, true);
   const [shopping, setShopping, shoppingOnline] = useDatabaseCollection('shopping', defaultShopping, true);
@@ -503,6 +519,17 @@ function Desktop({ currentMember, onMemberChange, authUsers, onUsersChanged, aut
     window.addEventListener('houseos:progress', update);
     return () => window.removeEventListener('houseos:progress', update);
   }, []);
+  useEffect(() => {
+    let active = true;
+    const refreshUnread = () => fetch('/api/messages/conversations', { cache: 'no-store' })
+      .then(response => response.ok ? response.json() : Promise.reject())
+      .then(result => active && setMessageUnreadCount(result.unreadCount || 0)).catch(() => {});
+    refreshUnread();
+    const interval = setInterval(refreshUnread, 5000);
+    const update = event => setMessageUnreadCount(event.detail ?? 0);
+    window.addEventListener('houseos:messages-unread', update);
+    return () => { active = false; clearInterval(interval); window.removeEventListener('houseos:messages-unread', update); };
+  }, [currentMember.id]);
   useEffect(() => {
     const showRestart = event => setRestartNotice(current => current || { title: event.detail?.title || 'Raspberry Pi startet neu', message: event.detail?.message || 'Der Raspberry Pi wird neu gestartet.', targetVersion: event.detail?.version || '' });
     window.addEventListener('houseos:restart', showRestart);
@@ -552,22 +579,163 @@ function Desktop({ currentMember, onMemberChange, authUsers, onUsersChanged, aut
     <section className="welcome-copy"><p>{greeting(time.getHours())}, {currentMember.name}</p><h1>Dein Zuhause ist<br /><em>bereit für den Tag.</em></h1></section>
     <aside className="desktop-icons">{Object.entries(APP_DEFS).map(([id, app]) => <DesktopIcon key={id} app={app} onClick={() => openApp(id)} />)}</aside>
     <HousePet member={currentMember} householdPoints={progress.householdPoints || 0} />
-    {launcherOpen && <Launcher onOpen={openApp} onClose={() => setLauncherOpen(false)} currentMember={currentMember} />}
+    {launcherOpen && <Launcher onOpen={openApp} onClose={() => setLauncherOpen(false)} currentMember={currentMember} isPhone={isPhone} />}
     <section className="window-layer">{Object.keys(APP_DEFS).filter(id => activeApps.includes(id)).map(id => <Window key={id} id={id} workspaceKey={currentMember.id} app={APP_DEFS[id]} onClose={() => closeApp(id)} onMinimize={() => minimizeApp(id)} onFocus={() => focusApp(id)} focused={focused === id} minimized={minimizedApps.includes(id)} z={20 + activeApps.indexOf(id)}>
       {id === 'today' && <Today tasks={tasks} shopping={shopping} mealPlans={mealPlans} onOpen={openApp} onPrint={() => openPrint('daily')} time={time} device={device} member={currentMember} progress={progress} />}
       {id === 'timer' && <KitchenTimers timers={timers} now={timerNow} onAdd={addTimer} onPause={pauseTimer} onResume={resumeTimer} onRemove={removeTimer} />}
       {id === 'tasks' && <Tasks items={tasks} setItems={setTasks} members={members} currentMember={currentMember} progress={progress} />}
       {id === 'shopping' && <Shopping items={shopping} setItems={setShopping} onPrint={() => openPrint('shopping')} />}
       {id === 'meals' && <MealPlanner items={mealPlans} setItems={setMealPlans} savedDishes={savedDishes} setSavedDishes={setSavedDishes} shopping={shopping} setShopping={setShopping} notify={setToast} />}
+      {id === 'messages' && <MessagesApp currentMember={currentMember} notify={setToast} />}
       {id === 'printer' && <PrintCenter tasks={tasks} shopping={shopping} notify={setToast} initialType={printType} device={device} />}
       {id === 'settings' && <SettingsApp member={currentMember} onMemberChange={onMemberChange} preferences={preferences} setPreferences={setPreferences} items={members} setItems={setMembers} tasks={tasks} setTasks={setTasks} notify={setToast} device={device} refreshDevice={refreshDevice} />}
     </Window>)}</section>
-    <nav className="dock" aria-label="Hauptnavigation"><button className="dock-home" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }} aria-label="Weitere Apps"><Command size={20} /><span className="dock-label">Mehr</span></button><span className="dock-separator" />{Object.entries(APP_DEFS).map(([id, app]) => { const Icon = app.icon; const phonePrimary = ['today', 'tasks', 'shopping', 'meals'].includes(id); return <button key={id} className={`dock-app ${phonePrimary ? 'phone-primary' : 'phone-secondary'} ${focused === id ? 'focused' : ''}`} onClick={() => openApp(id)} style={{ '--app': app.color }} title={app.title} aria-current={focused === id ? 'page' : undefined}><Icon size={21} /><span className="dock-label">{id === 'meals' ? 'Essen' : app.title === 'Einstellungen' ? 'Setup' : app.title}</span>{activeApps.includes(id) && <i />}</button>; })}</nav>
+    <nav className="dock" aria-label="Hauptnavigation"><button className="dock-home" onClick={event => { event.stopPropagation(); setLauncherOpen(!launcherOpen); }} aria-label="Weitere Apps"><Command size={20} /><span className="dock-label">Mehr</span></button><span className="dock-separator" />{Object.entries(APP_DEFS).map(([id, app]) => { const Icon = app.icon; const phonePrimary = ['today', 'tasks', 'shopping', 'messages'].includes(id); return <button key={id} className={`dock-app ${phonePrimary ? 'phone-primary' : 'phone-secondary'} ${focused === id ? 'focused' : ''}`} onClick={() => openApp(id)} style={{ '--app': app.color }} title={app.title} aria-current={focused === id ? 'page' : undefined}><Icon size={21} /><span className="dock-label">{id === 'meals' ? 'Essen' : app.title === 'Einstellungen' ? 'Setup' : app.title}</span>{id === 'messages' && messageUnreadCount > 0 && <b className="dock-badge">{messageUnreadCount > 9 ? '9+' : messageUnreadCount}</b>}{activeApps.includes(id) && <i />}</button>; })}</nav>
     {toast && <div className="toast" role="status" aria-live="polite"><CheckCircle2 size={18} />{toast}</div>}
     {locked && !ringingTimers.length && <LockScreen time={time} device={device} tasks={tasks} mealPlans={mealPlans} progress={progress} users={authUsers} onUsersChanged={onUsersChanged} error={authError} setError={setAuthError} onAuthenticated={nextMember => nextMember.id === currentMember.id ? setLocked(false) : onMemberChange(nextMember)} />}
     {!!ringingTimers.length && <TimerAlarm timers={ringingTimers} onStop={removeTimer} />}
     {restartNotice && <RestartScreen title={restartNotice.title} message={restartNotice.message} targetVersion={restartNotice.targetVersion} />}
   </main>;
+}
+
+const CHAT_REACTIONS = ['❤️', '👍', '😂', '🥰', '🎉'];
+const QUICK_MESSAGES = ['Bin gleich zu Hause 🏠', 'Bin gut angekommen ✨', 'Hab dich lieb ❤️', 'Braucht jemand etwas? 🛍️', 'Kannst du mich kurz anrufen? 📞'];
+const prepareChatPhoto = file => new Promise((resolve, reject) => {
+  if (!file?.type.startsWith('image/')) return reject(new Error('Bitte wähle ein Foto aus.'));
+  const reader = new FileReader();
+  reader.onerror = () => reject(new Error('Das Foto konnte nicht gelesen werden.'));
+  reader.onload = () => {
+    const image = new Image();
+    image.onerror = () => reject(new Error('Dieses Bildformat wird nicht unterstützt.'));
+    image.onload = () => {
+      const scale = Math.min(1, 1280 / Math.max(image.width, image.height));
+      const canvas = document.createElement('canvas'); canvas.width = Math.max(1, Math.round(image.width * scale)); canvas.height = Math.max(1, Math.round(image.height * scale));
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+      let quality = .86; let dataUrl = canvas.toDataURL('image/jpeg', quality);
+      while (dataUrl.length > 1_850_000 && quality > .45) { quality -= .1; dataUrl = canvas.toDataURL('image/jpeg', quality); }
+      if (dataUrl.length > 2_000_000) return reject(new Error('Das Foto ist auch nach dem Verkleinern noch zu groß.'));
+      resolve(dataUrl);
+    };
+    image.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+function MessagesApp({ currentMember, notify }) {
+  const requestedMember = new URLSearchParams(window.location.search).get('with');
+  const [conversations, setConversations] = useState([]);
+  const [selectedId, setSelectedId] = useState(requestedMember || 'family');
+  const [messages, setMessages] = useState([]);
+  const [draft, setDraft] = useState('');
+  const [photo, setPhoto] = useState(null);
+  const [reactionMenu, setReactionMenu] = useState(null);
+  const [lightbox, setLightbox] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
+  const endRef = useRef(null);
+  const photoInputRef = useRef(null);
+
+  const refreshConversations = useCallback(async () => {
+    const response = await fetch('/api/messages/conversations', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Chats konnten nicht geladen werden.');
+    const result = await response.json();
+    const items = [result.family, ...(result.members || [])].filter(Boolean);
+    setConversations(items);
+    window.dispatchEvent(new CustomEvent('houseos:messages-unread', { detail: result.unreadCount || 0 }));
+    setSelectedId(current => current && items.some(member => String(member.id) === String(current)) ? String(current) : (String(items[0]?.id || '') || null));
+    return result;
+  }, []);
+
+  const loadMessages = useCallback(async (memberId, markRead = true) => {
+    if (!memberId) { setMessages([]); return; }
+    const response = await fetch(`/api/messages/${memberId}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error((await response.json().catch(() => null))?.error || 'Nachrichten konnten nicht geladen werden.');
+    const result = await response.json();
+    setMessages(result.messages || []);
+    if (markRead) {
+      await fetch(`/api/messages/${memberId}/read`, { method: 'POST' });
+      await refreshConversations();
+    }
+  }, [refreshConversations]);
+
+  useEffect(() => {
+    let active = true;
+    refreshConversations().catch(error => active && setError(error.message)).finally(() => active && setLoading(false));
+    return () => { active = false; };
+  }, [currentMember.id, refreshConversations]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    setError('');
+    loadMessages(selectedId).catch(error => setError(error.message));
+    const url = new URL(window.location.href); url.searchParams.set('app', 'messages'); url.searchParams.set('with', selectedId); window.history.replaceState({}, '', url);
+    const interval = setInterval(() => loadMessages(selectedId).catch(() => {}), 3500);
+    return () => clearInterval(interval);
+  }, [selectedId, loadMessages]);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }); }, [messages.length, selectedId]);
+
+  const sendMessage = async event => {
+    event?.preventDefault();
+    const body = draft.trim();
+    if ((!body && !photo) || !selectedId || sending) return;
+    setSending(true); setError('');
+    try {
+      const response = await fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recipientId: selectedId === 'family' ? undefined : Number(selectedId), family: selectedId === 'family', body, image: photo?.dataUrl }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Nachricht konnte nicht gesendet werden.');
+      setDraft(''); setPhoto(null); setMessages(current => [...current, result]); await refreshConversations();
+    } catch (error) { setError(error.message); notify?.(error.message); }
+    finally { setSending(false); }
+  };
+
+  const choosePhoto = async event => {
+    const file = event.target.files?.[0]; event.target.value = '';
+    if (!file) return;
+    try { setPhoto({ dataUrl: await prepareChatPhoto(file), name: file.name }); }
+    catch (error) { setError(error.message); notify?.(error.message); }
+  };
+  const toggleReaction = async (message, emoji) => {
+    try {
+      const response = await fetch(`/api/messages/${message.kind}/${message.id}/reactions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ emoji }) });
+      const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Reaktion konnte nicht gespeichert werden.');
+      setMessages(current => current.map(item => item.id === message.id ? { ...item, reactions: result.reactions } : item)); setReactionMenu(null);
+    } catch (error) { notify?.(error.message); }
+  };
+  const selected = conversations.find(member => String(member.id) === String(selectedId));
+  const formatMessageTime = value => new Date(`${value.replace(' ', 'T')}Z`).toLocaleString('de-DE', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  const latestOwnId = [...messages].reverse().find(message => message.senderId === currentMember.id)?.id;
+
+  return <div className="messages-app">
+    <aside className={`conversation-sidebar ${selected ? 'has-selection' : ''}`}>
+      <header><span><MessageCircle size={22} /></span><div><h2>Chats</h2><p>Nachrichten im Haushalt</p></div></header>
+      <div className="conversation-list">{conversations.map(member => <button key={member.id} className={String(selectedId) === String(member.id) ? 'selected' : ''} onClick={() => setSelectedId(String(member.id))}>
+        <span className={`chat-avatar ${member.id === 'family' ? 'family-avatar' : ''}`} style={{ '--avatar': member.color }}>{member.id === 'family' ? <Users size={19} /> : initials(member.name)}</span>
+        <span className="conversation-copy"><strong>{member.name}</strong><small>{member.lastMessage || member.role}</small></span>
+        <span className="conversation-meta">{member.lastMessageAt && <time>{new Date(`${member.lastMessageAt.replace(' ', 'T')}Z`).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</time>}{member.unreadCount > 0 && <b>{member.unreadCount}</b>}</span>
+      </button>)}</div>
+      {!loading && !conversations.length && <div className="chat-empty-small"><Users size={24} /><strong>Noch niemand da</strong><p>Lege in den Einstellungen ein weiteres Mitglied an.</p></div>}
+    </aside>
+    <section className={`chat-panel ${selected ? 'open' : ''}`}>
+      {selected ? <>
+        <header className="chat-header"><button className="chat-back" onClick={() => setSelectedId(null)} aria-label="Zurück zur Übersicht"><ChevronLeft size={22} /></button><span className={`chat-avatar ${selected.id === 'family' ? 'family-avatar' : ''}`} style={{ '--avatar': selected.color }}>{selected.id === 'family' ? <Users size={19} /> : initials(selected.name)}</span><span><strong>{selected.name}</strong><small>{selected.role}</small></span></header>
+        <div className="message-thread" aria-live="polite">{!messages.length && !loading && <div className="chat-welcome"><span className={`chat-avatar ${selected.id === 'family' ? 'family-avatar' : ''}`} style={{ '--avatar': selected.color }}>{selected.id === 'family' ? <Users size={22} /> : initials(selected.name)}</span><strong>{selected.id === 'family' ? 'Ein Chat für eure Lieblingsmenschen' : `Schreib ${selected.name} etwas Liebes`}</strong><p>{selected.id === 'family' ? 'Fotos, kleine Updates und liebe Grüße für alle.' : 'Diese Unterhaltung ist nur für euch beide sichtbar.'}</p></div>}{messages.map(message => {
+          const own = message.senderId === currentMember.id;
+          const showBody = message.body && !(message.attachmentUrl && message.body === '📷 Foto');
+          return <div className={`message-row ${own ? 'own' : 'received'}`} key={`${message.kind}-${message.id}`}>
+            <div className="message-bubble">{message.kind === 'family' && !own && <strong className="message-sender" style={{ color: message.senderColor }}>{message.senderName}</strong>}{message.attachmentUrl && <button className="message-photo" onClick={() => setLightbox(message.attachmentUrl)} type="button"><img src={message.attachmentUrl} alt={`Foto von ${message.senderName}`} /></button>}{showBody && <p>{message.body}</p>}<span>{formatMessageTime(message.createdAt)}</span></div>
+            <div className="message-reactions">{message.reactions?.map(item => <button type="button" className={item.reactedByMe ? 'mine' : ''} key={item.emoji} onClick={() => toggleReaction(message, item.emoji)}>{item.emoji}<b>{item.count}</b></button>)}<button type="button" className="reaction-add" onClick={() => setReactionMenu(reactionMenu === `${message.kind}-${message.id}` ? null : `${message.kind}-${message.id}`)} aria-label="Reaktion hinzufügen"><Smile size={13} /></button>{reactionMenu === `${message.kind}-${message.id}` && <span className="reaction-picker">{CHAT_REACTIONS.map(emoji => <button type="button" key={emoji} onClick={() => toggleReaction(message, emoji)}>{emoji}</button>)}</span>}</div>
+            {own && message.id === latestOwnId && <small className="read-receipt">{message.readAt ? 'Gelesen' : 'Gesendet'}</small>}
+          </div>;
+        })}<div ref={endRef} /></div>
+        <div className="quick-messages" aria-label="Schnellnachrichten">{QUICK_MESSAGES.map(text => <button type="button" key={text} onClick={() => setDraft(text)}>{text}</button>)}</div>
+        <form className="message-composer" onSubmit={sendMessage}>{photo && <div className="photo-preview"><img src={photo.dataUrl} alt="Ausgewähltes Foto" /><span>{photo.name}</span><button type="button" onClick={() => setPhoto(null)} aria-label="Foto entfernen"><X size={14} /></button></div>}<input ref={photoInputRef} className="chat-photo-input" type="file" accept="image/jpeg,image/png,image/webp" onChange={choosePhoto} /><button className="photo-button" type="button" onClick={() => photoInputRef.current?.click()} aria-label="Foto auswählen"><Camera size={19} /></button><textarea value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} maxLength={1000} rows={1} placeholder={`Nachricht an ${selected.name} …`} /><button className="send-button" type="submit" disabled={(!draft.trim() && !photo) || sending} aria-label="Nachricht senden">{sending ? <LoaderCircle className="spin" size={19} /> : <Send size={19} />}</button></form>
+      </> : <div className="chat-placeholder"><MessageCircle size={38} /><strong>Deine Nachrichten</strong><p>Wähle ein Haushaltsmitglied aus und sag kurz Hallo.</p></div>}
+      {error && <p className="chat-error">{error}</p>}
+    </section>
+    {lightbox && <div className="chat-lightbox" role="dialog" aria-label="Fotoansicht" onClick={() => setLightbox('')}><button onClick={() => setLightbox('')} aria-label="Foto schließen"><X size={22} /></button><img src={lightbox} alt="Geteiltes Foto in Großansicht" onClick={event => event.stopPropagation()} /></div>}
+  </div>;
 }
 
 function HousePet({ member, householdPoints }) {
@@ -609,15 +777,15 @@ function HousePet({ member, householdPoints }) {
   };
   const perform = action => {
     if (busyRef.current > Date.now() || pet.busyUntil > Date.now()) return react(`Einen Moment noch – Bärli ist noch ${Math.max(1, Math.ceil((Math.max(busyRef.current, pet.busyUntil) - Date.now()) / 1000))} Sek. beschäftigt.`, pet.busyType || 'hello');
-    if (pet.sleeping && action !== 'sleep') return react('Pssst … ich schlafe gerade. 🌙', 'sleep');
+    if (pet.sleeping && action !== 'sleep') return react('Pssst … ich schlafe gerade.', 'sleep');
     const actions = {
-      feed: { duration: 6_000, message: 'Mmmh, lecker! Danke! 🍪', values: { fullness: 24, joy: 4, energy: 3, love: 2, xp: 5 } },
-      cuddle: { duration: 5_000, message: `Kuscheln mit ${member.name}! 💕`, values: { fullness: 0, joy: 14, energy: 2, love: 20, xp: 7 } },
-      play: { duration: 8_000, message: 'Nochmal! Das macht Spaß! ⭐', values: { fullness: -8, joy: 25, energy: -12, love: 5, xp: 10 } },
+      feed: { duration: 6_000, message: 'Mmmh, lecker! Danke!', values: { fullness: 24, joy: 4, energy: 3, love: 2, xp: 5 } },
+      cuddle: { duration: 5_000, message: `Kuscheln mit ${member.name}!`, values: { fullness: 0, joy: 14, energy: 2, love: 20, xp: 7 } },
+      play: { duration: 8_000, message: 'Nochmal! Das macht Spaß!', values: { fullness: -8, joy: 25, energy: -12, love: 5, xp: 10 } },
     };
     if (action === 'sleep') {
       setPet(current => ({ ...agePetState(current), sleeping: !current.sleeping, sleepStarted: current.sleeping ? null : Date.now(), lastUpdated: Date.now() }));
-      react(pet.sleeping ? 'Guten Morgen! Ich bin wieder wach. ☀️' : 'Gute Nacht … bis später. 🌙', pet.sleeping ? 'wake' : 'sleep');
+      react(pet.sleeping ? 'Guten Morgen! Ich bin wieder wach.' : 'Gute Nacht … bis später.', pet.sleeping ? 'wake' : 'sleep');
       return;
     }
     const selected = actions[action]; if (!selected) return;
@@ -632,7 +800,7 @@ function HousePet({ member, householdPoints }) {
     if (busyRef.current > Date.now() || pet.busyUntil > Date.now()) return react(`Bärli ist noch ${Math.max(1, Math.ceil((Math.max(busyRef.current, pet.busyUntil) - Date.now()) / 1000))} Sek. beschäftigt.`, pet.busyType || 'dress');
     if (!unlocked(outfit)) {
       const requirement = outfit.points ? `${outfit.points} Haushaltspunkte` : `Bärli-Level ${outfit.level}`;
-      react(`Noch gesperrt: ${requirement}. 🎁`, 'no'); return;
+      react(`Noch gesperrt: ${requirement}.`, 'no'); return;
     }
     const busyUntil = Date.now() + 1_000; busyRef.current = busyUntil; setPetNow(Date.now());
     setPet(current => {
@@ -640,7 +808,7 @@ function HousePet({ member, householdPoints }) {
       const outfits = outfit.id === 'none' ? [] : currentOutfits.includes(outfit.id) ? currentOutfits.filter(id => id !== outfit.id) : [...currentOutfits, outfit.id];
       return { ...current, outfits, busyUntil, busyType: 'dress' };
     });
-    react(outfit.id === 'none' ? 'Heute ganz natürlich! 🧸' : `${outfit.label} wird an- oder ausgezogen.`, 'dress');
+    react(outfit.id === 'none' ? 'Heute ganz natürlich!' : `${outfit.label} wird an- oder ausgezogen.`, 'dress');
   };
   const lowest = Math.min(pet.fullness, pet.joy, pet.energy, pet.love);
   const mood = pet.sleeping ? 'schläft' : lowest < 22 ? 'braucht dich' : lowest < 45 ? 'ein bisschen müde' : lowest > 85 ? 'überglücklich' : 'zufrieden';
@@ -653,7 +821,7 @@ function HousePet({ member, householdPoints }) {
   return <aside ref={root} className={`house-pet ${menuOpen ? 'menu-open' : ''} ${pet.sleeping ? 'sleeping' : ''}`} aria-label="HouseOS-Pet Bärli" onClick={event => event.stopPropagation()}>
     {reaction.message && <span className="house-pet-bubble" role="status" aria-live="polite">{reaction.message}</span>}
     {menuOpen && <section className="pet-context-menu" role="dialog" aria-label="Bärlis Pflege-Menü">
-      <header><span className="pet-context-avatar">🧸</span><span><strong>Bärli</strong><small>Level {level} · {mood}</small></span><button aria-label="Bärli-Menü schließen" onClick={() => setMenuOpen(false)}><X size={15} /></button></header>
+      <header><span className="pet-context-avatar"><PawPrint size={21} /></span><span><strong>Bärli</strong><small>Level {level} · {mood}</small></span><button aria-label="Bärli-Menü schließen" onClick={() => setMenuOpen(false)}><X size={15} /></button></header>
       {reaction.message && <p className="pet-menu-reaction" role="status">{reaction.message}</p>}
       {busy && <div className="pet-activity" role="status"><span><LoaderCircle size={13} />{activityLabels[pet.busyType] || 'Bärli ist beschäftigt'}</span><b>{busySeconds} Sek.</b><i><em style={{ width: `${Math.max(4, 100 - busySeconds / ({ feed: 6, cuddle: 5, play: 8, dress: 1 }[pet.busyType] || busySeconds) * 100)}%` }} /></i></div>}
       <div className="pet-level"><span><Star size={12} /> Freundschaft</span><b>{pet.xp % 45} / 45 XP</b><i><em style={{ width: `${pet.xp % 45 / 45 * 100}%` }} /></i></div>
@@ -664,7 +832,7 @@ function HousePet({ member, householdPoints }) {
         <button onClick={() => perform('play')} disabled={pet.sleeping || busy}><Gamepad2 size={18} /><span><strong>Spielen</strong><small>{busy && pet.busyType === 'play' ? `Noch ${busySeconds} Sek.` : 'Dauert 8 Sek.'}</small></span></button>
         <button className={pet.sleeping ? 'wake' : ''} disabled={busy} onClick={() => perform('sleep')}><BedDouble size={18} /><span><strong>{pet.sleeping ? 'Aufwecken' : 'Schlafen'}</strong><small>{pet.sleeping ? 'Guten Morgen' : busy ? 'Bitte warten' : 'Energie tanken'}</small></span></button>
       </div>
-      <div className="pet-wardrobe"><header><span><Shirt size={14} /> Anziehen</span><small><Gift size={12} /> mehrere kombinierbar</small></header><div>{PET_OUTFITS.map(outfit => { const selected = outfit.id === 'none' ? !pet.outfits?.length : pet.outfits?.includes(outfit.id); return <button key={outfit.id} disabled={busy} className={selected ? 'selected' : ''} onClick={() => chooseOutfit(outfit)} aria-pressed={selected} aria-label={`${outfit.label}${unlocked(outfit) ? '' : ' gesperrt'}`}><span>{outfit.emoji}</span><small>{outfit.label}</small>{!unlocked(outfit) && <Lock size={10} />}</button>; })}</div></div>
+      <div className="pet-wardrobe"><header><span><Shirt size={14} /> Anziehen</span><small><Gift size={12} /> mehrere kombinierbar</small></header><div>{PET_OUTFITS.map(outfit => { const selected = outfit.id === 'none' ? !pet.outfits?.length : pet.outfits?.includes(outfit.id); const OutfitIcon = outfit.icon; return <button key={outfit.id} disabled={busy} className={selected ? 'selected' : ''} onClick={() => chooseOutfit(outfit)} aria-pressed={selected} aria-label={`${outfit.label}${unlocked(outfit) ? '' : ' gesperrt'}`}><span><OutfitIcon size={19} /></span><small>{outfit.label}</small>{!unlocked(outfit) && <Lock size={10} />}</button>; })}</div></div>
       <p className="pet-task-hint"><Trophy size={12} /> {householdPoints} Haushaltspunkte · Erledigte Aufgaben schalten Extras frei.</p>
     </section>}
     <button type="button" className={`pet-touch-target action-${reaction.action} ${busy ? 'busy' : ''}`} onClick={() => { setMenuOpen(value => !value); if (!menuOpen) react(PET_MESSAGES(member.name)[reaction.key % PET_MESSAGES(member.name).length], 'hello'); }} aria-label={menuOpen ? 'Bärli-Menü schließen' : 'Bärli-Menü öffnen'} title="Bärli antippen">
@@ -676,7 +844,7 @@ function HousePet({ member, householdPoints }) {
         <i className="pet-leg left" /><i className="pet-leg right" />
         <i className="pet-head"><b className="pet-eye left" /><b className="pet-eye right" /><b className="pet-muzzle"><em /></b></i>
         {(pet.outfits || []).filter(id => id !== 'pajamas').map(id => <i className={`pet-accessory ${id}`} key={id} />)}
-        {reaction.action === 'feed' && <i className="pet-effect snack">🍪</i>}{reaction.action === 'cuddle' && <i className="pet-effect hearts">♥</i>}{reaction.action === 'play' && <i className="pet-effect stars">★</i>}
+        {reaction.action === 'feed' && <Cookie className="pet-effect snack" size={20} />}{reaction.action === 'cuddle' && <Heart className="pet-effect hearts" size={21} fill="currentColor" />}{reaction.action === 'play' && <Star className="pet-effect stars" size={21} fill="currentColor" />}
       </span>
       {pet.sleeping && <span className="pet-sleep-symbol">Zzz</span>}
       <span className="pet-name">Bärli · Lv. {level}</span>
@@ -767,12 +935,12 @@ function TimerAlarm({ timers, onStop }) {
 
 function DesktopIcon({ app, onClick }) { const Icon = app.icon; return <button className="desktop-icon" onClick={onClick}><span style={{ '--app': app.color }}><Icon size={25} /></span><small>{app.title}</small></button>; }
 
-function Launcher({ onOpen, onClose, currentMember }) {
+function Launcher({ onOpen, onClose, currentMember, isPhone = false }) {
   const [query, setQuery] = useState('');
   const matches = Object.entries(APP_DEFS).filter(([, app]) => `${app.title} ${app.keywords}`.toLowerCase().includes(query.trim().toLowerCase()));
   return <div className="launcher" onClick={event => event.stopPropagation()}>
     <div className="launcher-head"><div><small>HOUSEOS</small><h2>Was möchtest du tun?</h2></div><button onClick={onClose}><X size={18} /></button></div>
-    <label className="search"><Search size={17} /><input autoFocus value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && matches.length) onOpen(matches[0][0]); }} placeholder="Apps und Aktionen suchen …" /></label>
+    <label className="search"><Search size={17} /><input autoFocus={!isPhone} value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && matches.length) onOpen(matches[0][0]); }} placeholder="Apps und Aktionen suchen …" /></label>
     <div className="launcher-grid">{matches.map(([id, app]) => { const Icon = app.icon; return <button key={id} onClick={() => onOpen(id)}><span style={{ '--app': app.color }}><Icon size={22} /></span><p>{app.title}</p><ChevronRight size={16} /></button>; })}</div>
     {!matches.length && <div className="launcher-empty"><Search size={20} /><strong>Keine Treffer</strong><small>Versuche einen anderen Suchbegriff.</small></div>}
     <div className="launcher-footer"><ProfileAvatar className="avatar profile-image" member={currentMember} /><span><strong>{currentMember.name}</strong><small>{currentMember.role}</small></span><span className="online">Angemeldet</span></div>
@@ -1217,7 +1385,9 @@ const NUMERIC_KEYBOARD_ROWS = [['1','2','3'],['4','5','6'],['7','8','9'],['-','0
 function OnScreenKeyboard() {
   const [target, setTarget] = useState(null); const [shift, setShift] = useState(false);
   const preserveFocus = useRef(false);
+  const isPhone = usePhoneLayout();
   useEffect(() => {
+    if (isPhone) { setTarget(null); return; }
     const editable = element => element instanceof HTMLTextAreaElement || (element instanceof HTMLInputElement && !['button','checkbox','color','date','datetime-local','file','hidden','month','radio','range','reset','submit','time','week'].includes(element.type) && !element.readOnly && !element.disabled && !element.dataset.noVirtualKeyboard);
     const openFor = element => {
       if (!editable(element)) return;
@@ -1245,7 +1415,8 @@ function OnScreenKeyboard() {
     const focusOut = event => { if (!preserveFocus.current && !event.relatedTarget?.closest?.('.screen-keyboard, [data-preserve-keyboard]')) setTimeout(() => { if (!document.activeElement?.closest?.('[data-preserve-keyboard]') && !editable(document.activeElement)) setTarget(null); }, 0); };
     document.addEventListener('pointerdown', pointerDown, true); document.addEventListener('focusin', focusIn); document.addEventListener('focusout', focusOut);
     return () => { document.removeEventListener('pointerdown', pointerDown, true); document.removeEventListener('focusin', focusIn); document.removeEventListener('focusout', focusOut); };
-  }, []);
+  }, [isPhone]);
+  if (isPhone) return null;
   if (!target?.isConnected) return null;
   const isNumeric = ['number','tel'].includes(target.type) || target.inputMode === 'numeric' || target.inputMode === 'decimal';
   const updateValue = (value, cursor) => {
