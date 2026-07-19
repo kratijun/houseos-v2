@@ -66,7 +66,7 @@ Dabei werden HouseOS, der überwachte Chromium-Kiosk und CUPS als Systemdienste 
 
 ## Updates über GitHub Releases
 
-Die Einstellungen-App zeigt die installierte Version, den Pi-Systemzustand und verfügbare GitHub-Releases. Das Repository wird auf dem Pi in `/etc/houseos.env` konfiguriert:
+Die Einstellungen-App zeigt die installierte Version, den Pi-Systemzustand und verfügbare GitHub-Releases. Im Update-Fenster wird außerdem der Änderungstext des neuesten Releases mit Überschriften, Listen, Hervorhebungen und Links dargestellt. Das Repository wird auf dem Pi in `/etc/houseos.env` konfiguriert:
 
 ```ini
 HOUSEOS_GITHUB_REPO=OWNER/REPO

@@ -36,7 +36,7 @@ export async function getLatestRelease({ repository, currentVersion, token = '' 
     releaseName: release.name || release.tag_name,
     releaseUrl: release.html_url,
     publishedAt: release.published_at,
-    notes: String(release.body || '').slice(0, 1200),
+    notes: String(release.body || '').replace(/\r\n?/g, '\n').trim().slice(0, 20000),
     hasUpdate,
     installable: Boolean(artifact && digest),
     artifact: artifact ? { name: artifact.name, apiUrl: artifact.url, downloadUrl: artifact.browser_download_url, digest, size: artifact.size } : null,

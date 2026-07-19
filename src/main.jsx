@@ -1632,6 +1632,65 @@ function AppearanceSettings({ preferences, updatePreference }) {
 
 const UPDATE_ACTIVE_STATES = ['queued','downloading','verifying','extracting','backup','installing','dependencies','restarting'];
 
+const RELEASE_INLINE_PATTERN = /(\*\*([^*]+)\*\*|`([^`]+)`|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s<]+))/g;
+const renderReleaseInline = (text, keyPrefix) => {
+  const nodes = []; let cursor = 0; let match;
+  while ((match = RELEASE_INLINE_PATTERN.exec(text)) !== null) {
+    if (match.index > cursor) nodes.push(text.slice(cursor, match.index));
+    if (match[2]) nodes.push(<strong key={`${keyPrefix}-${match.index}`}>{match[2]}</strong>);
+    else if (match[3]) nodes.push(<code key={`${keyPrefix}-${match.index}`}>{match[3]}</code>);
+    else {
+      const label = match[4] || match[6]; const href = match[5] || match[6];
+      nodes.push(<a key={`${keyPrefix}-${match.index}`} href={href} target="_blank" rel="noreferrer">{label}</a>);
+    }
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  RELEASE_INLINE_PATTERN.lastIndex = 0;
+  return nodes;
+};
+
+function ReleaseChangelog({ notes, version, releaseName, releaseUrl, publishedAt }) {
+  const lines = String(notes || '').replace(/\r\n?/g, '\n').split('\n'); const blocks = [];
+  const startsBlock = line => /^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s*|---+\s*$)/.test(line);
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    if (!line.trim() || /^<!--/.test(line.trim())) { index += 1; continue; }
+    const heading = line.match(/^\s*(#{1,6})\s+(.+)$/);
+    if (heading) {
+      const level = Math.min(4, heading[1].length + 2); const Heading = `h${level}`;
+      blocks.push(<Heading key={`heading-${index}`}>{renderReleaseInline(heading[2], `heading-${index}`)}</Heading>); index += 1; continue;
+    }
+    const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
+    if (unordered) {
+      const items = []; const start = index;
+      while (index < lines.length) {
+        const item = lines[index].match(/^\s*[-*+]\s+(.+)$/); if (!item) break;
+        const clean = item[1].replace(/^\[[ xX]\]\s*/, ''); items.push(<li key={`item-${index}`}>{renderReleaseInline(clean, `item-${index}`)}</li>); index += 1;
+      }
+      blocks.push(<ul key={`list-${start}`}>{items}</ul>); continue;
+    }
+    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (ordered) {
+      const items = []; const start = index;
+      while (index < lines.length) {
+        const item = lines[index].match(/^\s*\d+[.)]\s+(.+)$/); if (!item) break;
+        items.push(<li key={`item-${index}`}>{renderReleaseInline(item[1], `item-${index}`)}</li>); index += 1;
+      }
+      blocks.push(<ol key={`list-${start}`}>{items}</ol>); continue;
+    }
+    const quote = line.match(/^\s*>\s*(.+)$/);
+    if (quote) { blocks.push(<blockquote key={`quote-${index}`}>{renderReleaseInline(quote[1], `quote-${index}`)}</blockquote>); index += 1; continue; }
+    if (/^\s*---+\s*$/.test(line)) { blocks.push(<hr key={`rule-${index}`} />); index += 1; continue; }
+    const paragraph = [line.trim()]; const start = index; index += 1;
+    while (index < lines.length && lines[index].trim() && !startsBlock(lines[index])) { paragraph.push(lines[index].trim()); index += 1; }
+    blocks.push(<p key={`paragraph-${start}`}>{renderReleaseInline(paragraph.join(' '), `paragraph-${start}`)}</p>);
+  }
+  if (!blocks.length) return null;
+  const published = publishedAt && !Number.isNaN(Date.parse(publishedAt)) ? new Intl.DateTimeFormat('de-DE', { dateStyle: 'long' }).format(new Date(publishedAt)) : '';
+  return <section className="release-changelog" aria-label={`Changelog für HouseOS ${version || ''}`}><header><div><span>RELEASE-ÄNDERUNGEN</span><h3>{releaseName || `HouseOS ${version}`}</h3>{published && <small>Veröffentlicht am {published}</small>}</div>{releaseUrl && <a href={releaseUrl} target="_blank" rel="noreferrer"><ExternalLink size={13} /> Auf GitHub öffnen</a>}</header><div className="release-notes">{blocks}</div></section>;
+}
+
 function SystemPanel({ section, notify }) {
   const [info, setInfo] = useState(null); const [update, setUpdate] = useState(null); const [updateStatus, setUpdateStatus] = useState(null); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
   const loadInfo = async () => { try { const response = await fetch('/api/system/info'); const result = await response.json(); if (!response.ok) throw new Error(result.error); setInfo(result); } catch (loadError) { setError(loadError.message || 'Systeminformationen konnten nicht geladen werden.'); } };
@@ -1646,7 +1705,7 @@ function SystemPanel({ section, notify }) {
     <DeviceControls supported={info?.deviceActionsSupported} notify={notify} />
     {info?.updateStatus && <div className={`update-state ${info.updateStatus.status}`}><strong>Letzter Updatestatus</strong><span>{info.updateStatus.message}</span></div>}{error && <p className="settings-error">{error}</p>}</section>;
   return <section className="system-section"><div className="section-heading"><div><h3>Softwareupdate</h3><p>Geprüfte Versionen direkt aus GitHub Releases installieren.</p></div><button onClick={() => checkUpdate(true)} disabled={busy}><RefreshCw size={14} /> {busy ? 'Prüfe …' : 'Neu prüfen'}</button></div>
-    <article className="update-card"><div className="update-icon"><Download size={25} /></div><div className="update-copy"><small>INSTALLIERTE VERSION</small><h3>HouseOS {update?.currentVersion || info?.version || '–'}</h3><p>{update?.message || 'GitHub wird auf neue Releases geprüft …'}</p>{update?.hasUpdate && <div className="version-route"><span>v{update.currentVersion}</span><ChevronRight size={15} /><strong>v{update.latestVersion}</strong></div>}{update?.releaseUrl && <a href={update.releaseUrl} target="_blank" rel="noreferrer"><GitBranch size={13} /> Release auf GitHub ansehen</a>}</div><div className="update-actions">{update?.hasUpdate && update?.installable ? <button className="primary" disabled={busy || UPDATE_ACTIVE_STATES.includes(updateStatus?.status) || !info?.installerReady} onClick={install}>{UPDATE_ACTIVE_STATES.includes(updateStatus?.status) ? <RefreshCw className="spin" size={15} /> : <Download size={15} />}{UPDATE_ACTIVE_STATES.includes(updateStatus?.status) ? 'Installation läuft …' : 'Update installieren'}</button> : <span className="up-to-date"><CheckCircle2 size={18} /> Aktuell</span>}</div></article>
+    <article className="update-card"><div className="update-icon"><Download size={25} /></div><div className="update-copy"><small>INSTALLIERTE VERSION</small><h3>HouseOS {update?.currentVersion || info?.version || '–'}</h3><p>{update?.message || 'GitHub wird auf neue Releases geprüft …'}</p>{update?.hasUpdate && <div className="version-route"><span>v{update.currentVersion}</span><ChevronRight size={15} /><strong>v{update.latestVersion}</strong></div>}</div><div className="update-actions">{update?.hasUpdate && update?.installable ? <button className="primary" disabled={busy || UPDATE_ACTIVE_STATES.includes(updateStatus?.status) || !info?.installerReady} onClick={install}>{UPDATE_ACTIVE_STATES.includes(updateStatus?.status) ? <RefreshCw className="spin" size={15} /> : <Download size={15} />}{UPDATE_ACTIVE_STATES.includes(updateStatus?.status) ? 'Installation läuft …' : 'Update installieren'}</button> : <span className="up-to-date"><CheckCircle2 size={18} /> Aktuell</span>}</div>{update?.notes && <ReleaseChangelog notes={update.notes} version={update.latestVersion} releaseName={update.releaseName} releaseUrl={update.releaseUrl} publishedAt={update.publishedAt} />}</article>
     {updateStatus && updateStatus.status !== 'idle' && <UpdateProgress status={updateStatus} />}
     {!update?.configured && <div className="setup-hint"><GitBranch size={18} /><span><strong>GitHub noch verbinden</strong><small>Auf dem Pi in <code>/etc/houseos.env</code> den Wert <code>HOUSEOS_GITHUB_REPO=OWNER/REPO</code> setzen.</small></span></div>}{error && <p className="settings-error">{error}</p>}</section>;
 }
