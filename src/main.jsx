@@ -12,6 +12,7 @@ import {
   Speaker, Headphones, Keyboard, MousePointer2, MoreHorizontal, LoaderCircle,
   Trophy, Flame, Award, CalendarDays, Utensils, Heart, Cookie, Gamepad2,
   BedDouble, Shirt, Star, Gift, Smile, PawPrint, MessageCircle, Send,
+  Pencil,
 } from 'lucide-react';
 import packageInfo from '../package.json';
 import './styles.css';
@@ -627,9 +628,12 @@ function MessagesApp({ currentMember, notify }) {
   const [selectedId, setSelectedId] = useState(requestedMember || 'family');
   const [messages, setMessages] = useState([]);
   const [typingMembers, setTypingMembers] = useState([]);
+  const [presence, setPresence] = useState({ online: false, onlineCount: 0, lastSeenAt: null });
   const [draft, setDraft] = useState('');
   const [photo, setPhoto] = useState(null);
   const [reactionMenu, setReactionMenu] = useState(null);
+  const [messageMenu, setMessageMenu] = useState(null);
+  const [editingMessage, setEditingMessage] = useState(null);
   const [lightbox, setLightbox] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -656,6 +660,7 @@ function MessagesApp({ currentMember, notify }) {
     const result = await response.json();
     setMessages(result.messages || []);
     setTypingMembers(result.typing || []);
+    setPresence(result.presence || { online: false, onlineCount: 0, lastSeenAt: null });
     if (markRead) {
       await fetch(`/api/messages/${memberId}/read`, { method: 'POST' });
       await refreshConversations();
@@ -720,10 +725,37 @@ function MessagesApp({ currentMember, notify }) {
       setMessages(current => current.map(item => item.id === message.id ? { ...item, reactions: result.reactions } : item)); setReactionMenu(null);
     } catch (error) { notify?.(error.message); }
   };
+  const saveEditedMessage = async () => {
+    if (!editingMessage || editingMessage.saving) return;
+    const body = editingMessage.body.trim();
+    if (!body && !editingMessage.hasAttachment) return setError('Die Nachricht darf nicht leer sein.');
+    setEditingMessage(current => ({ ...current, saving: true })); setError('');
+    try {
+      const response = await fetch(`/api/messages/${editingMessage.kind}/${editingMessage.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ body }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Nachricht konnte nicht bearbeitet werden.');
+      setMessages(current => current.map(item => item.kind === result.kind && item.id === result.id ? result : item));
+      setEditingMessage(null); await refreshConversations(); notify?.('Nachricht bearbeitet');
+    } catch (editError) { setError(editError.message); setEditingMessage(current => current ? { ...current, saving: false } : null); }
+  };
+  const deleteMessage = async message => {
+    setMessageMenu(null);
+    if (!window.confirm('Diese Nachricht wirklich löschen?')) return;
+    try {
+      const response = await fetch(`/api/messages/${message.kind}/${message.id}`, { method: 'DELETE' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Nachricht konnte nicht gelöscht werden.');
+      setMessages(current => current.filter(item => !(item.kind === message.kind && item.id === message.id)));
+      if (editingMessage?.kind === message.kind && editingMessage?.id === message.id) setEditingMessage(null);
+      await refreshConversations(); notify?.('Nachricht gelöscht');
+    } catch (deleteError) { setError(deleteError.message); }
+  };
   const selected = conversations.find(member => String(member.id) === String(selectedId));
   const formatMessageTime = value => new Date(`${value.replace(' ', 'T')}Z`).toLocaleString('de-DE', { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  const formatLastSeen = value => value ? new Date(value).toLocaleString('de-DE', { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
   const latestOwnId = [...messages].reverse().find(message => message.senderId === currentMember.id)?.id;
   const typingLabel = typingMembers.length === 1 ? `${typingMembers[0].name} schreibt …` : typingMembers.length === 2 ? `${typingMembers[0].name} und ${typingMembers[1].name} schreiben …` : `${typingMembers.length} Personen schreiben …`;
+  const presenceLabel = selected?.id === 'family' ? `${presence.onlineCount || 0} Familienmitglied${presence.onlineCount === 1 ? '' : 'er'} online` : presence.online ? 'Online' : presence.lastSeenAt ? `Zuletzt aktiv ${formatLastSeen(presence.lastSeenAt)}` : selected?.role;
 
   return <div className="messages-app">
     <aside className={`conversation-sidebar ${selected ? 'has-selection' : ''}`}>
@@ -737,13 +769,13 @@ function MessagesApp({ currentMember, notify }) {
     </aside>
     <section className={`chat-panel ${selected ? 'open' : ''}`}>
       {selected ? <>
-        <header className="chat-header"><button className="chat-back" onClick={() => setSelectedId(null)} aria-label="Zurück zur Übersicht"><ChevronLeft size={22} /></button><span className={`chat-avatar ${selected.id === 'family' ? 'family-avatar' : ''}`} style={{ '--avatar': selected.color }}>{selected.id === 'family' ? <Users size={19} /> : initials(selected.name)}</span><span><strong>{selected.name}</strong><small>{selected.role}</small></span></header>
+        <header className="chat-header"><button className="chat-back" onClick={() => setSelectedId(null)} aria-label="Zurück zur Übersicht"><ChevronLeft size={22} /></button><span className={`chat-avatar ${selected.id === 'family' ? 'family-avatar' : ''}`} style={{ '--avatar': selected.color }}>{selected.id === 'family' ? <Users size={19} /> : initials(selected.name)}</span><span><strong>{selected.name}</strong><small className={presence.online ? 'chat-presence online-now' : 'chat-presence'}><i />{presenceLabel}</small></span></header>
         <div className="message-thread" aria-live="polite">{!messages.length && !loading && <div className="chat-welcome"><span className={`chat-avatar ${selected.id === 'family' ? 'family-avatar' : ''}`} style={{ '--avatar': selected.color }}>{selected.id === 'family' ? <Users size={22} /> : initials(selected.name)}</span><strong>{selected.id === 'family' ? 'Ein Chat für eure Lieblingsmenschen' : `Schreib ${selected.name} etwas Liebes`}</strong><p>{selected.id === 'family' ? 'Fotos, kleine Updates und liebe Grüße für alle.' : 'Diese Unterhaltung ist nur für euch beide sichtbar.'}</p></div>}{messages.map(message => {
           const own = message.senderId === currentMember.id;
           const showBody = message.body && !(message.attachmentUrl && message.body === '📷 Foto');
           return <div className={`message-row ${own ? 'own' : 'received'}`} key={`${message.kind}-${message.id}`}>
-            <div className="message-bubble">{message.kind === 'family' && !own && <strong className="message-sender" style={{ color: message.senderColor }}>{message.senderName}</strong>}{message.attachmentUrl && <button className="message-photo" onClick={() => setLightbox(message.attachmentUrl)} type="button"><img src={message.attachmentUrl} alt={`Foto von ${message.senderName}`} /></button>}{showBody && <p>{message.body}</p>}<span>{formatMessageTime(message.createdAt)}</span></div>
-            <div className="message-reactions">{message.reactions?.map(item => <button type="button" className={item.reactedByMe ? 'mine' : ''} key={item.emoji} onClick={() => toggleReaction(message, item.emoji)}>{item.emoji}<b>{item.count}</b></button>)}<button type="button" className="reaction-add" onClick={() => setReactionMenu(reactionMenu === `${message.kind}-${message.id}` ? null : `${message.kind}-${message.id}`)} aria-label="Reaktion hinzufügen"><Smile size={13} /></button>{reactionMenu === `${message.kind}-${message.id}` && <span className="reaction-picker">{CHAT_REACTIONS.map(emoji => <button type="button" key={emoji} onClick={() => toggleReaction(message, emoji)}>{emoji}</button>)}</span>}</div>
+            <div className="message-bubble">{message.kind === 'family' && !own && <strong className="message-sender" style={{ color: message.senderColor }}>{message.senderName}</strong>}{message.attachmentUrl && <button className="message-photo" onClick={() => setLightbox(message.attachmentUrl)} type="button"><img src={message.attachmentUrl} alt={`Foto von ${message.senderName}`} /></button>}{editingMessage?.kind === message.kind && editingMessage?.id === message.id ? <div className="message-editor"><textarea autoFocus maxLength={1000} value={editingMessage.body} onChange={event => setEditingMessage(current => ({ ...current, body: event.target.value }))} onKeyDown={event => { if (event.key === 'Escape') setEditingMessage(null); if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); saveEditedMessage(); } }} /><span><button type="button" onClick={() => setEditingMessage(null)}>Abbrechen</button><button type="button" disabled={editingMessage.saving} onClick={saveEditedMessage}>{editingMessage.saving ? 'Speichert …' : 'Speichern'}</button></span></div> : showBody && <p>{message.body}</p>}<span>{formatMessageTime(message.createdAt)}{message.editedAt ? ' · Bearbeitet' : ''}</span></div>
+            <div className="message-reactions">{message.reactions?.map(item => <button type="button" className={item.reactedByMe ? 'mine' : ''} key={item.emoji} onClick={() => toggleReaction(message, item.emoji)}>{item.emoji}<b>{item.count}</b></button>)}<button type="button" className="reaction-add" onClick={() => setReactionMenu(reactionMenu === `${message.kind}-${message.id}` ? null : `${message.kind}-${message.id}`)} aria-label="Reaktion hinzufügen"><Smile size={13} /></button>{reactionMenu === `${message.kind}-${message.id}` && <span className="reaction-picker">{CHAT_REACTIONS.map(emoji => <button type="button" key={emoji} onClick={() => toggleReaction(message, emoji)}>{emoji}</button>)}</span>}{own && <><button type="button" className="message-more" onClick={() => setMessageMenu(messageMenu === `${message.kind}-${message.id}` ? null : `${message.kind}-${message.id}`)} aria-label="Nachrichtenoptionen"><MoreHorizontal size={14} /></button>{messageMenu === `${message.kind}-${message.id}` && <span className="message-menu"><button type="button" onClick={() => { setEditingMessage({ kind: message.kind, id: message.id, body: showBody ? message.body : '', hasAttachment: Boolean(message.attachmentUrl), saving: false }); setMessageMenu(null); }}><Pencil size={13} /> Bearbeiten</button><button type="button" className="danger" onClick={() => deleteMessage(message)}><Trash2 size={13} /> Löschen</button></span>}</>}</div>
             {own && message.id === latestOwnId && <small className="read-receipt">{message.readAt ? 'Gelesen' : 'Gesendet'}</small>}
           </div>;
         })}{typingMembers.length > 0 && <div className="typing-indicator"><span><i /><i /><i /></span><small>{typingLabel}</small></div>}<div ref={endRef} /></div>

@@ -145,6 +145,8 @@ ensureColumn('tasks', 'recurrence', "TEXT NOT NULL DEFAULT 'none'");
 ensureColumn('shopping', 'quantity', "TEXT NOT NULL DEFAULT '1 Stück'");
 ensureColumn('messages', 'attachment_path', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('messages', 'attachment_type', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('messages', 'edited_at', 'TEXT');
+ensureColumn('family_messages', 'edited_at', 'TEXT');
 
 const seed = db.transaction(() => {
   if (!db.prepare('SELECT COUNT(*) AS count FROM members').get().count) {
@@ -191,6 +193,13 @@ const vapidKeys = loadVapidKeys();
 webpush.setVapidDetails(process.env.HOUSEOS_VAPID_SUBJECT || 'mailto:houseos@localhost', vapidKeys.publicKey, vapidKeys.privateKey);
 
 const sessions = new Map();
+const presenceStates = new Map();
+const ONLINE_WINDOW_MS = 12_000;
+const touchPresence = memberId => presenceStates.set(Number(memberId), Date.now());
+const memberPresence = memberId => {
+  const lastSeen = presenceStates.get(Number(memberId)) || 0;
+  return { online: Boolean(lastSeen && Date.now() - lastSeen <= ONLINE_WINDOW_MS), lastSeenAt: lastSeen ? new Date(lastSeen).toISOString() : null };
+};
 const hashPin = (pin, salt = randomBytes(16).toString('hex')) => `${salt}:${scryptSync(pin, salt, 32).toString('hex')}`;
 const validPin = (pin, stored) => {
   try {
@@ -210,6 +219,7 @@ const requireAuth = (req, res, next) => {
   const member = sessionMember(req);
   if (!member) return res.status(401).json({ error: 'Bitte anmelden.' });
   req.member = { ...member, isAdmin: Boolean(member.isAdmin) };
+  touchPresence(member.id);
   next();
 };
 const requireAdmin = (req, res, next) => requireAuth(req, res, () => req.member.isAdmin ? next() : res.status(403).json({ error: 'Administratorrechte erforderlich.' }));
@@ -342,14 +352,14 @@ const serializeMessage = (row, kind, currentMemberId) => ({
 const messageRow = `
   SELECT msg.id, msg.sender_id AS senderId, msg.recipient_id AS recipientId,
          msg.body, msg.attachment_path AS attachmentPath, msg.attachment_type AS attachmentType,
-         msg.created_at AS createdAt, msg.read_at AS readAt,
+         msg.created_at AS createdAt, msg.edited_at AS editedAt, msg.read_at AS readAt,
          sender.name AS senderName, sender.color AS senderColor
   FROM messages msg JOIN members sender ON sender.id = msg.sender_id
 `;
 const familyMessageRow = `
   SELECT msg.id, msg.sender_id AS senderId, NULL AS recipientId,
          msg.body, msg.attachment_path AS attachmentPath, msg.attachment_type AS attachmentType,
-         msg.created_at AS createdAt, NULL AS readAt,
+         msg.created_at AS createdAt, msg.edited_at AS editedAt, NULL AS readAt,
          sender.name AS senderName, sender.color AS senderColor
   FROM family_messages msg JOIN members sender ON sender.id = msg.sender_id
 `;
@@ -389,12 +399,13 @@ app.get('/api/messages/conversations', requireAuth, (req, res) => {
   const familyUnread = db.prepare('SELECT COUNT(*) AS count FROM family_messages WHERE id > ? AND sender_id <> ?').get(familyRead, req.member.id).count;
   const family = { id: 'family', name: 'Familienchat', role: 'Alle zusammen', color: '#ff9f0a', ...familyLast, unreadCount: Number(familyUnread) };
   const directUnread = members.reduce((sum, member) => sum + Number(member.unreadCount), 0);
-  res.json({ family, members: members.map(member => ({ ...member, unreadCount: Number(member.unreadCount) })), unreadCount: directUnread + family.unreadCount });
+  res.json({ family, members: members.map(member => ({ ...member, ...memberPresence(member.id), unreadCount: Number(member.unreadCount) })), unreadCount: directUnread + family.unreadCount });
 });
 
 app.get('/api/messages/family', requireAuth, (req, res) => {
   const messages = db.prepare(`${familyMessageRow} ORDER BY msg.id DESC LIMIT 200`).all().reverse().map(row => serializeMessage(row, 'family', req.member.id));
-  res.json({ member: { id: 'family', name: 'Familienchat', role: 'Alle zusammen', color: '#ff9f0a' }, messages, typing: typingMembers('family', req.member.id) });
+  const onlineCount = db.prepare('SELECT id FROM members WHERE id <> ?').all(req.member.id).filter(member => memberPresence(member.id).online).length;
+  res.json({ member: { id: 'family', name: 'Familienchat', role: 'Alle zusammen', color: '#ff9f0a' }, messages, typing: typingMembers('family', req.member.id), presence: { online: onlineCount > 0, onlineCount } });
 });
 
 app.post('/api/messages/family/read', requireAuth, (req, res) => {
@@ -410,7 +421,7 @@ app.get('/api/messages/:memberId', requireAuth, (req, res) => {
   if (!other) return res.status(404).json({ error: 'Mitglied nicht gefunden.' });
   const messages = db.prepare(`${messageRow} WHERE (msg.sender_id = ? AND msg.recipient_id = ?) OR (msg.sender_id = ? AND msg.recipient_id = ?) ORDER BY msg.id DESC LIMIT 200`)
     .all(req.member.id, otherId, otherId, req.member.id).reverse().map(row => serializeMessage(row, 'direct', req.member.id));
-  res.json({ member: other, messages, typing: typingMembers(directConversationKey(req.member.id, otherId), req.member.id) });
+  res.json({ member: other, messages, typing: typingMembers(directConversationKey(req.member.id, otherId), req.member.id), presence: memberPresence(otherId) });
 });
 
 app.post('/api/messages', requireAuth, (req, res) => {
@@ -448,6 +459,38 @@ app.post('/api/messages', requireAuth, (req, res) => {
 app.post('/api/messages/:memberId/read', requireAuth, (req, res) => {
   const result = db.prepare("UPDATE messages SET read_at = CURRENT_TIMESTAMP WHERE sender_id = ? AND recipient_id = ? AND read_at IS NULL").run(Number(req.params.memberId), req.member.id);
   res.json({ ok: true, changed: result.changes });
+});
+
+app.patch('/api/messages/:kind/:messageId', requireAuth, (req, res) => {
+  const kind = String(req.params.kind);
+  const messageId = Number(req.params.messageId);
+  const body = String(req.body?.body || '').trim();
+  if (!['direct', 'family'].includes(kind) || !Number.isInteger(messageId)) return res.status(400).json({ error: 'Ungültige Nachricht.' });
+  if (body.length > 1000) return res.status(400).json({ error: 'Die Nachricht darf höchstens 1.000 Zeichen lang sein.' });
+  const table = kind === 'family' ? 'family_messages' : 'messages';
+  const existing = db.prepare(`SELECT id, attachment_path AS attachmentPath FROM ${table} WHERE id = ? AND sender_id = ?`).get(messageId, req.member.id);
+  if (!existing) return res.status(404).json({ error: 'Nachricht nicht gefunden oder nicht von dir.' });
+  if (!body && !existing.attachmentPath) return res.status(400).json({ error: 'Die Nachricht darf nicht leer sein.' });
+  const storedBody = body || (kind === 'direct' ? '📷 Foto' : '');
+  db.prepare(`UPDATE ${table} SET body = ?, edited_at = CURRENT_TIMESTAMP WHERE id = ?`).run(storedBody, messageId);
+  const row = db.prepare(`${kind === 'family' ? familyMessageRow : messageRow} WHERE msg.id = ?`).get(messageId);
+  res.json(serializeMessage(row, kind, req.member.id));
+});
+
+app.delete('/api/messages/:kind/:messageId', requireAuth, (req, res) => {
+  const kind = String(req.params.kind);
+  const messageId = Number(req.params.messageId);
+  if (!['direct', 'family'].includes(kind) || !Number.isInteger(messageId)) return res.status(400).json({ error: 'Ungültige Nachricht.' });
+  const table = kind === 'family' ? 'family_messages' : 'messages';
+  const existing = db.prepare(`SELECT id, attachment_path AS attachmentPath FROM ${table} WHERE id = ? AND sender_id = ?`).get(messageId, req.member.id);
+  if (!existing) return res.status(404).json({ error: 'Nachricht nicht gefunden oder nicht von dir.' });
+  const remove = db.transaction(() => {
+    db.prepare('DELETE FROM message_reactions WHERE message_kind = ? AND message_id = ?').run(kind, messageId);
+    db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(messageId);
+  });
+  remove();
+  removeStoredImage(existing.attachmentPath);
+  res.json({ ok: true, id: messageId, kind });
 });
 
 app.post('/api/messages/:kind/:messageId/reactions', requireAuth, (req, res) => {
