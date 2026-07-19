@@ -12,7 +12,7 @@ import {
   Speaker, Headphones, Keyboard, MousePointer2, MoreHorizontal, LoaderCircle,
   Trophy, Flame, Award, CalendarDays, Utensils, Heart, Cookie, Gamepad2,
   BedDouble, Shirt, Star, Gift, Smile, PawPrint, MessageCircle, Send,
-  Pencil,
+  Pencil, Mic, Square, Reply,
 } from 'lucide-react';
 import packageInfo from '../package.json';
 import './styles.css';
@@ -621,6 +621,16 @@ const prepareChatPhoto = file => new Promise((resolve, reject) => {
   };
   reader.readAsDataURL(file);
 });
+const prepareChatMedia = file => {
+  if (file?.type !== 'image/gif') return prepareChatPhoto(file);
+  return new Promise((resolve, reject) => {
+    if (file.size > 4_000_000) return reject(new Error('Das GIF darf höchstens 4 MB groß sein.'));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Das GIF konnte nicht gelesen werden.'));
+    reader.onload = () => resolve(reader.result);
+    reader.readAsDataURL(file);
+  });
+};
 
 function MessagesApp({ currentMember, notify }) {
   const requestedMember = new URLSearchParams(window.location.search).get('with');
@@ -630,7 +640,10 @@ function MessagesApp({ currentMember, notify }) {
   const [typingMembers, setTypingMembers] = useState([]);
   const [presence, setPresence] = useState({ online: false, onlineCount: 0, lastSeenAt: null });
   const [draft, setDraft] = useState('');
-  const [photo, setPhoto] = useState(null);
+  const [attachment, setAttachment] = useState(null);
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [recording, setRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [reactionMenu, setReactionMenu] = useState(null);
   const [messageMenu, setMessageMenu] = useState(null);
   const [editingMessage, setEditingMessage] = useState(null);
@@ -640,7 +653,12 @@ function MessagesApp({ currentMember, notify }) {
   const [error, setError] = useState('');
   const endRef = useRef(null);
   const photoInputRef = useRef(null);
+  const audioInputRef = useRef(null);
   const typingTimerRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
+  const recordingStreamRef = useRef(null);
+  const recordingTimerRef = useRef(null);
+  const recordingLimitRef = useRef(null);
 
   const refreshConversations = useCallback(async () => {
     const response = await fetch('/api/messages/conversations', { cache: 'no-store' });
@@ -676,6 +694,7 @@ function MessagesApp({ currentMember, notify }) {
   useEffect(() => {
     if (!selectedId) return;
     setError('');
+    setReplyingTo(null);
     loadMessages(selectedId).catch(error => setError(error.message));
     const url = new URL(window.location.href); url.searchParams.set('app', 'messages'); url.searchParams.set('with', selectedId); window.history.replaceState({}, '', url);
     const interval = setInterval(() => loadMessages(selectedId, false).catch(() => {}), 1500);
@@ -688,6 +707,11 @@ function MessagesApp({ currentMember, notify }) {
   }, [selectedId]);
 
   useEffect(() => () => { clearTimeout(typingTimerRef.current); postTyping(false, selectedId); }, [selectedId, postTyping]);
+  useEffect(() => () => {
+    clearInterval(recordingTimerRef.current); clearTimeout(recordingLimitRef.current);
+    if (mediaRecorderRef.current?.state === 'recording') { mediaRecorderRef.current.onstop = null; mediaRecorderRef.current.stop(); }
+    recordingStreamRef.current?.getTracks().forEach(track => track.stop());
+  }, []);
   useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }); }, [messages.length, selectedId, typingMembers.length]);
 
   const updateDraft = value => {
@@ -697,26 +721,70 @@ function MessagesApp({ currentMember, notify }) {
     typingTimerRef.current = setTimeout(() => postTyping(false), 2_200);
   };
 
+  const stopRecording = () => {
+    clearInterval(recordingTimerRef.current); clearTimeout(recordingLimitRef.current);
+    if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop();
+    setRecording(false);
+  };
+  const startRecording = async () => {
+    if (recording) return stopRecording();
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { audioInputRef.current?.click(); return; }
+    setError('');
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(type => MediaRecorder.isTypeSupported(type)) || '';
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined); const chunks = [];
+      recordingStreamRef.current = stream; mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+      recorder.onstop = () => {
+        const plainType = String(recorder.mimeType || mimeType || 'audio/webm').split(';')[0];
+        const blob = new Blob(chunks, { type: plainType });
+        stream.getTracks().forEach(track => track.stop()); recordingStreamRef.current = null;
+        if (!blob.size) return setError('Die Aufnahme ist leer. Bitte versuche es erneut.');
+        if (blob.size > 5_000_000) return setError('Die Sprachnachricht darf höchstens 5 MB groß sein.');
+        const reader = new FileReader(); reader.onerror = () => setError('Die Aufnahme konnte nicht vorbereitet werden.');
+        reader.onload = () => setAttachment({ dataUrl: reader.result, name: 'Sprachnachricht', type: plainType, kind: 'audio' });
+        reader.readAsDataURL(blob);
+      };
+      recorder.start(250); setAttachment(null); setRecordingSeconds(0); setRecording(true);
+      recordingTimerRef.current = setInterval(() => setRecordingSeconds(current => current + 1), 1_000);
+      recordingLimitRef.current = setTimeout(stopRecording, 120_000);
+    } catch { setError('Das Mikrofon konnte nicht geöffnet werden. Bitte erlaube den Zugriff in Chromium.'); }
+  };
+
   const sendMessage = async event => {
     event?.preventDefault();
     const body = draft.trim();
-    if ((!body && !photo) || !selectedId || sending) return;
+    if ((!body && !attachment) || !selectedId || sending || recording) return;
     clearTimeout(typingTimerRef.current); postTyping(false);
     setSending(true); setError('');
     try {
-      const response = await fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recipientId: selectedId === 'family' ? undefined : Number(selectedId), family: selectedId === 'family', body, image: photo?.dataUrl }) });
+      const response = await fetch('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recipientId: selectedId === 'family' ? undefined : Number(selectedId), family: selectedId === 'family', body, attachment: attachment?.dataUrl, replyTo: replyingTo ? { kind: replyingTo.kind, id: replyingTo.id } : undefined }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Nachricht konnte nicht gesendet werden.');
-      setDraft(''); setPhoto(null); setMessages(current => [...current, result]); await refreshConversations();
+      setDraft(''); setAttachment(null); setReplyingTo(null); setMessages(current => [...current, result]); await refreshConversations();
     } catch (error) { setError(error.message); notify?.(error.message); }
     finally { setSending(false); }
   };
 
-  const choosePhoto = async event => {
+  const chooseMedia = async event => {
     const file = event.target.files?.[0]; event.target.value = '';
     if (!file) return;
-    try { setPhoto({ dataUrl: await prepareChatPhoto(file), name: file.name }); }
+    try { setAttachment({ dataUrl: await prepareChatMedia(file), name: file.name, type: file.type, kind: 'image' }); }
     catch (error) { setError(error.message); notify?.(error.message); }
+  };
+  const chooseAudio = async event => {
+    const file = event.target.files?.[0]; event.target.value = '';
+    if (!file) return;
+    if (file.size > 5_000_000) return setError('Die Sprachnachricht darf höchstens 5 MB groß sein.');
+    const type = ({ 'audio/x-m4a': 'audio/mp4', 'audio/mp3': 'audio/mpeg' })[file.type] || file.type;
+    if (!['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/mpeg'].includes(type)) return setError('Dieses Audioformat wird nicht unterstützt.');
+    try {
+      const blob = new Blob([await file.arrayBuffer()], { type }); const reader = new FileReader();
+      reader.onerror = () => setError('Die Sprachnachricht konnte nicht gelesen werden.');
+      reader.onload = () => setAttachment({ dataUrl: reader.result, name: file.name || 'Sprachnachricht', type, kind: 'audio' });
+      reader.readAsDataURL(blob);
+    } catch { setError('Die Sprachnachricht konnte nicht vorbereitet werden.'); }
   };
   const toggleReaction = async (message, emoji) => {
     try {
@@ -772,15 +840,16 @@ function MessagesApp({ currentMember, notify }) {
         <header className="chat-header"><button className="chat-back" onClick={() => setSelectedId(null)} aria-label="Zurück zur Übersicht"><ChevronLeft size={22} /></button><span className={`chat-avatar ${selected.id === 'family' ? 'family-avatar' : ''}`} style={{ '--avatar': selected.color }}>{selected.id === 'family' ? <Users size={19} /> : initials(selected.name)}</span><span><strong>{selected.name}</strong><small className={presence.online ? 'chat-presence online-now' : 'chat-presence'}><i />{presenceLabel}</small></span></header>
         <div className="message-thread" aria-live="polite">{!messages.length && !loading && <div className="chat-welcome"><span className={`chat-avatar ${selected.id === 'family' ? 'family-avatar' : ''}`} style={{ '--avatar': selected.color }}>{selected.id === 'family' ? <Users size={22} /> : initials(selected.name)}</span><strong>{selected.id === 'family' ? 'Ein Chat für eure Lieblingsmenschen' : `Schreib ${selected.name} etwas Liebes`}</strong><p>{selected.id === 'family' ? 'Fotos, kleine Updates und liebe Grüße für alle.' : 'Diese Unterhaltung ist nur für euch beide sichtbar.'}</p></div>}{messages.map(message => {
           const own = message.senderId === currentMember.id;
-          const showBody = message.body && !(message.attachmentUrl && message.body === '📷 Foto');
+          const mediaPlaceholder = message.attachmentType?.startsWith('audio/') ? '🎤 Sprachnachricht' : message.attachmentType === 'image/gif' ? 'GIF' : '📷 Foto';
+          const showBody = message.body && !(message.attachmentUrl && message.body === mediaPlaceholder);
           return <div className={`message-row ${own ? 'own' : 'received'}`} key={`${message.kind}-${message.id}`}>
-            <div className="message-bubble">{message.kind === 'family' && !own && <strong className="message-sender" style={{ color: message.senderColor }}>{message.senderName}</strong>}{message.attachmentUrl && <button className="message-photo" onClick={() => setLightbox(message.attachmentUrl)} type="button"><img src={message.attachmentUrl} alt={`Foto von ${message.senderName}`} /></button>}{editingMessage?.kind === message.kind && editingMessage?.id === message.id ? <div className="message-editor"><textarea autoFocus maxLength={1000} value={editingMessage.body} onChange={event => setEditingMessage(current => ({ ...current, body: event.target.value }))} onKeyDown={event => { if (event.key === 'Escape') setEditingMessage(null); if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); saveEditedMessage(); } }} /><span><button type="button" onClick={() => setEditingMessage(null)}>Abbrechen</button><button type="button" disabled={editingMessage.saving} onClick={saveEditedMessage}>{editingMessage.saving ? 'Speichert …' : 'Speichern'}</button></span></div> : showBody && <p>{message.body}</p>}<span>{formatMessageTime(message.createdAt)}{message.editedAt ? ' · Bearbeitet' : ''}</span></div>
-            <div className="message-reactions">{message.reactions?.map(item => <button type="button" className={item.reactedByMe ? 'mine' : ''} key={item.emoji} onClick={() => toggleReaction(message, item.emoji)}>{item.emoji}<b>{item.count}</b></button>)}<button type="button" className="reaction-add" onClick={() => setReactionMenu(reactionMenu === `${message.kind}-${message.id}` ? null : `${message.kind}-${message.id}`)} aria-label="Reaktion hinzufügen"><Smile size={13} /></button>{reactionMenu === `${message.kind}-${message.id}` && <span className="reaction-picker">{CHAT_REACTIONS.map(emoji => <button type="button" key={emoji} onClick={() => toggleReaction(message, emoji)}>{emoji}</button>)}</span>}{own && <><button type="button" className="message-more" onClick={() => setMessageMenu(messageMenu === `${message.kind}-${message.id}` ? null : `${message.kind}-${message.id}`)} aria-label="Nachrichtenoptionen"><MoreHorizontal size={14} /></button>{messageMenu === `${message.kind}-${message.id}` && <span className="message-menu"><button type="button" onClick={() => { setEditingMessage({ kind: message.kind, id: message.id, body: showBody ? message.body : '', hasAttachment: Boolean(message.attachmentUrl), saving: false }); setMessageMenu(null); }}><Pencil size={13} /> Bearbeiten</button><button type="button" className="danger" onClick={() => deleteMessage(message)}><Trash2 size={13} /> Löschen</button></span>}</>}</div>
+            <div className="message-bubble">{message.kind === 'family' && !own && <strong className="message-sender" style={{ color: message.senderColor }}>{message.senderName}</strong>}{message.reply && <blockquote className="message-reply-quote"><strong><Reply size={11} />{message.reply.senderName}</strong><span>{message.reply.body}</span></blockquote>}{message.attachmentUrl && message.attachmentType?.startsWith('audio/') ? <audio className="voice-message" controls preload="metadata" src={message.attachmentUrl}>Sprachnachricht</audio> : message.attachmentUrl && <button className="message-photo" onClick={() => setLightbox(message.attachmentUrl)} type="button"><img src={message.attachmentUrl} alt={message.attachmentType === 'image/gif' ? `GIF von ${message.senderName}` : `Foto von ${message.senderName}`} /></button>}{editingMessage?.kind === message.kind && editingMessage?.id === message.id ? <div className="message-editor"><textarea autoFocus maxLength={1000} value={editingMessage.body} onChange={event => setEditingMessage(current => ({ ...current, body: event.target.value }))} onKeyDown={event => { if (event.key === 'Escape') setEditingMessage(null); if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); saveEditedMessage(); } }} /><span><button type="button" onClick={() => setEditingMessage(null)}>Abbrechen</button><button type="button" disabled={editingMessage.saving} onClick={saveEditedMessage}>{editingMessage.saving ? 'Speichert …' : 'Speichern'}</button></span></div> : showBody && <p>{message.body}</p>}<span>{formatMessageTime(message.createdAt)}{message.editedAt ? ' · Bearbeitet' : ''}</span></div>
+            <div className="message-reactions">{message.reactions?.map(item => <button type="button" className={item.reactedByMe ? 'mine' : ''} key={item.emoji} onClick={() => toggleReaction(message, item.emoji)}>{item.emoji}<b>{item.count}</b></button>)}<button type="button" className="reaction-add" onClick={() => setReactionMenu(reactionMenu === `${message.kind}-${message.id}` ? null : `${message.kind}-${message.id}`)} aria-label="Reaktion hinzufügen"><Smile size={13} /></button>{reactionMenu === `${message.kind}-${message.id}` && <span className="reaction-picker">{CHAT_REACTIONS.map(emoji => <button type="button" key={emoji} onClick={() => toggleReaction(message, emoji)}>{emoji}</button>)}</span>}<button type="button" className="message-reply-button" onClick={() => setReplyingTo({ kind: message.kind, id: message.id, senderName: message.senderName, body: showBody ? message.body : mediaPlaceholder })} aria-label="Auf Nachricht antworten"><Reply size={13} /></button>{own && <><button type="button" className="message-more" onClick={() => setMessageMenu(messageMenu === `${message.kind}-${message.id}` ? null : `${message.kind}-${message.id}`)} aria-label="Nachrichtenoptionen"><MoreHorizontal size={14} /></button>{messageMenu === `${message.kind}-${message.id}` && <span className="message-menu"><button type="button" onClick={() => { setEditingMessage({ kind: message.kind, id: message.id, body: showBody ? message.body : '', hasAttachment: Boolean(message.attachmentUrl), saving: false }); setMessageMenu(null); }}><Pencil size={13} /> Bearbeiten</button><button type="button" className="danger" onClick={() => deleteMessage(message)}><Trash2 size={13} /> Löschen</button></span>}</>}</div>
             {own && message.id === latestOwnId && <small className="read-receipt">{message.readAt ? 'Gelesen' : 'Gesendet'}</small>}
           </div>;
         })}{typingMembers.length > 0 && <div className="typing-indicator"><span><i /><i /><i /></span><small>{typingLabel}</small></div>}<div ref={endRef} /></div>
         <div className="quick-messages" aria-label="Schnellnachrichten">{QUICK_MESSAGES.map(text => <button type="button" key={text} onClick={() => updateDraft(text)}>{text}</button>)}</div>
-        <form className="message-composer" onSubmit={sendMessage}>{photo && <div className="photo-preview"><img src={photo.dataUrl} alt="Ausgewähltes Foto" /><span>{photo.name}</span><button type="button" onClick={() => setPhoto(null)} aria-label="Foto entfernen"><X size={14} /></button></div>}<input ref={photoInputRef} className="chat-photo-input" type="file" accept="image/jpeg,image/png,image/webp" onChange={choosePhoto} /><button className="photo-button" type="button" onClick={() => photoInputRef.current?.click()} aria-label="Foto auswählen"><Camera size={19} /></button><textarea value={draft} onChange={event => updateDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} maxLength={1000} rows={1} placeholder={`Nachricht an ${selected.name} …`} /><button className="send-button" type="submit" disabled={(!draft.trim() && !photo) || sending} aria-label="Nachricht senden">{sending ? <LoaderCircle className="spin" size={19} /> : <Send size={19} />}</button></form>
+        <form className="message-composer" onSubmit={sendMessage}>{replyingTo && <div className="reply-preview"><Reply size={15} /><span><strong>Antwort an {replyingTo.senderName}</strong><small>{replyingTo.body}</small></span><button type="button" onClick={() => setReplyingTo(null)} aria-label="Antwort verwerfen"><X size={14} /></button></div>}{recording && <div className="recording-preview"><i /><strong>Aufnahme läuft</strong><span>{String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:{String(recordingSeconds % 60).padStart(2, '0')}</span><small>Maximal 2 Minuten</small></div>}{attachment && <div className="photo-preview">{attachment.kind === 'audio' ? <audio controls preload="metadata" src={attachment.dataUrl}>Sprachnachricht</audio> : <img src={attachment.dataUrl} alt={attachment.type === 'image/gif' ? 'Ausgewähltes GIF' : 'Ausgewähltes Foto'} />}<span>{attachment.name}</span><button type="button" onClick={() => setAttachment(null)} aria-label="Medium entfernen"><X size={14} /></button></div>}<input ref={photoInputRef} className="chat-photo-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={chooseMedia} /><input ref={audioInputRef} className="chat-photo-input" type="file" accept="audio/webm,audio/ogg,audio/mp4,audio/mpeg" capture="user" onChange={chooseAudio} /><button className="photo-button" type="button" disabled={recording} onClick={() => photoInputRef.current?.click()} aria-label="Foto oder GIF auswählen"><Camera size={19} /></button><button className={`voice-button ${recording ? 'recording' : ''}`} type="button" onClick={startRecording} aria-label={recording ? 'Aufnahme beenden' : 'Sprachnachricht aufnehmen'}>{recording ? <Square size={16} fill="currentColor" /> : <Mic size={19} />}</button><textarea value={draft} disabled={recording} onChange={event => updateDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} maxLength={1000} rows={1} placeholder={`Nachricht an ${selected.name} …`} /><button className="send-button" type="submit" disabled={(!draft.trim() && !attachment) || sending || recording} aria-label="Nachricht senden">{sending ? <LoaderCircle className="spin" size={19} /> : <Send size={19} />}</button></form>
       </> : <div className="chat-placeholder"><MessageCircle size={38} /><strong>Deine Nachrichten</strong><p>Wähle ein Haushaltsmitglied aus und sag kurz Hallo.</p></div>}
       {error && <p className="chat-error">{error}</p>}
     </section>

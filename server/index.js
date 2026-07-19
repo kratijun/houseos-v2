@@ -147,6 +147,12 @@ ensureColumn('messages', 'attachment_path', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('messages', 'attachment_type', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('messages', 'edited_at', 'TEXT');
 ensureColumn('family_messages', 'edited_at', 'TEXT');
+for (const table of ['messages', 'family_messages']) {
+  ensureColumn(table, 'reply_kind', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(table, 'reply_message_id', 'INTEGER');
+  ensureColumn(table, 'reply_sender_name', "TEXT NOT NULL DEFAULT ''");
+  ensureColumn(table, 'reply_body', "TEXT NOT NULL DEFAULT ''");
+}
 
 const seed = db.transaction(() => {
   if (!db.prepare('SELECT COUNT(*) AS count FROM members').get().count) {
@@ -172,7 +178,7 @@ db.prepare("INSERT OR IGNORE INTO print_settings (id, printer_name, paper_width,
 db.prepare("INSERT OR IGNORE INTO device_settings (id, weather_city) VALUES (1, '')").run();
 
 const app = express();
-app.use(express.json({ limit: '3mb' }));
+app.use(express.json({ limit: '8mb' }));
 
 const vapidPath = path.join(dataDir, 'push-vapid.json');
 const loadVapidKeys = () => {
@@ -323,17 +329,24 @@ app.post('/api/push/test', requireAuth, async (req, res) => {
 const messageMediaDir = path.join(dataDir, 'message-media');
 fs.mkdirSync(messageMediaDir, { recursive: true });
 const reactionEmojis = new Set(['❤️', '👍', '😂', '🥰', '🎉']);
-const storeMessageImage = value => {
+const attachmentPreview = type => type?.startsWith('audio/') ? '🎤 Sprachnachricht' : type === 'image/gif' ? 'GIF' : '📷 Foto';
+const storeMessageAttachment = value => {
   if (!value) return { attachmentPath: '', attachmentType: '' };
-  const match = String(value).match(/^data:(image\/(?:jpeg|png|webp));base64,([a-z0-9+/=]+)$/i);
-  if (!match) throw Object.assign(new Error('Dieses Bildformat wird nicht unterstützt.'), { status: 400 });
+  const match = String(value).match(/^data:((?:image\/(?:jpeg|png|webp|gif))|(?:audio\/(?:webm|ogg|mp4|mpeg)));base64,([a-z0-9+/=]+)$/i);
+  if (!match) throw Object.assign(new Error('Dieses Medienformat wird nicht unterstützt.'), { status: 400 });
   const buffer = Buffer.from(match[2], 'base64');
-  if (!buffer.length || buffer.length > 1_500_000) throw Object.assign(new Error('Das Foto darf höchstens 1,5 MB groß sein.'), { status: 413 });
+  const maxBytes = match[1] === 'image/gif' ? 4_000_000 : match[1].startsWith('audio/') ? 5_000_000 : 1_500_000;
+  if (!buffer.length || buffer.length > maxBytes) throw Object.assign(new Error(match[1].startsWith('audio/') ? 'Die Sprachnachricht darf höchstens 5 MB groß sein.' : 'Das Bild darf höchstens 4 MB groß sein.'), { status: 413 });
   const validMagic = match[1] === 'image/jpeg' ? buffer[0] === 0xff && buffer[1] === 0xd8
     : match[1] === 'image/png' ? buffer.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))
-    : buffer.subarray(8, 12).toString() === 'WEBP';
-  if (!validMagic) throw Object.assign(new Error('Die Bilddatei ist beschädigt.'), { status: 400 });
-  const extension = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[match[1]];
+    : match[1] === 'image/webp' ? buffer.subarray(8, 12).toString() === 'WEBP'
+    : match[1] === 'image/gif' ? ['GIF87a', 'GIF89a'].includes(buffer.subarray(0, 6).toString())
+    : match[1] === 'audio/webm' ? buffer.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))
+    : match[1] === 'audio/ogg' ? buffer.subarray(0, 4).toString() === 'OggS'
+    : match[1] === 'audio/mp4' ? buffer.subarray(4, 8).toString() === 'ftyp'
+    : buffer.subarray(0, 3).toString() === 'ID3' || (buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0);
+  if (!validMagic) throw Object.assign(new Error('Die Mediendatei ist beschädigt.'), { status: 400 });
+  const extension = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/mpeg': 'mp3' }[match[1]];
   const attachmentPath = `${randomBytes(24).toString('hex')}.${extension}`;
   fs.writeFileSync(path.join(messageMediaDir, attachmentPath), buffer, { flag: 'wx', mode: 0o600 });
   return { attachmentPath, attachmentType: match[1] };
@@ -347,12 +360,15 @@ const reactionsFor = (kind, messageId, currentMemberId) => db.prepare(`
 const serializeMessage = (row, kind, currentMemberId) => ({
   ...row, kind,
   attachmentUrl: row.attachmentPath ? `/api/message-media/${row.attachmentPath}` : '',
+  reply: row.replyMessageId ? { kind: row.replyKind, id: row.replyMessageId, senderName: row.replySenderName, body: row.replyBody } : null,
   reactions: reactionsFor(kind, row.id, currentMemberId),
 });
 const messageRow = `
   SELECT msg.id, msg.sender_id AS senderId, msg.recipient_id AS recipientId,
          msg.body, msg.attachment_path AS attachmentPath, msg.attachment_type AS attachmentType,
          msg.created_at AS createdAt, msg.edited_at AS editedAt, msg.read_at AS readAt,
+         msg.reply_kind AS replyKind, msg.reply_message_id AS replyMessageId,
+         msg.reply_sender_name AS replySenderName, msg.reply_body AS replyBody,
          sender.name AS senderName, sender.color AS senderColor
   FROM messages msg JOIN members sender ON sender.id = msg.sender_id
 `;
@@ -360,6 +376,8 @@ const familyMessageRow = `
   SELECT msg.id, msg.sender_id AS senderId, NULL AS recipientId,
          msg.body, msg.attachment_path AS attachmentPath, msg.attachment_type AS attachmentType,
          msg.created_at AS createdAt, msg.edited_at AS editedAt, NULL AS readAt,
+         msg.reply_kind AS replyKind, msg.reply_message_id AS replyMessageId,
+         msg.reply_sender_name AS replySenderName, msg.reply_body AS replyBody,
          sender.name AS senderName, sender.color AS senderColor
   FROM family_messages msg JOIN members sender ON sender.id = msg.sender_id
 `;
@@ -375,6 +393,16 @@ const typingMembers = (conversationKey, currentMemberId) => {
   const placeholders = memberIds.map(() => '?').join(',');
   return db.prepare(`SELECT id, name, color FROM members WHERE id IN (${placeholders}) ORDER BY lower(name)`).all(...memberIds);
 };
+const resolveReply = ({ family, recipientId, replyTo, currentMemberId }) => {
+  if (!replyTo) return { kind: '', messageId: null, senderName: '', body: '' };
+  const kind = String(replyTo.kind || ''); const messageId = Number(replyTo.id);
+  if ((family && kind !== 'family') || (!family && kind !== 'direct') || !Number.isInteger(messageId)) throw Object.assign(new Error('Die beantwortete Nachricht ist ungültig.'), { status: 400 });
+  const row = family
+    ? db.prepare(`${familyMessageRow} WHERE msg.id = ?`).get(messageId)
+    : db.prepare(`${messageRow} WHERE msg.id = ? AND ((msg.sender_id = ? AND msg.recipient_id = ?) OR (msg.sender_id = ? AND msg.recipient_id = ?))`).get(messageId, currentMemberId, recipientId, recipientId, currentMemberId);
+  if (!row) throw Object.assign(new Error('Die beantwortete Nachricht wurde nicht gefunden.'), { status: 404 });
+  return { kind, messageId, senderName: row.senderName, body: String(row.body || attachmentPreview(row.attachmentType)).slice(0, 240) };
+};
 
 app.post('/api/messages/typing', requireAuth, (req, res) => {
   const family = req.body?.family === true;
@@ -389,12 +417,12 @@ app.post('/api/messages/typing', requireAuth, (req, res) => {
 app.get('/api/messages/conversations', requireAuth, (req, res) => {
   const members = db.prepare(`
     SELECT m.id, m.name, m.role, m.color,
-      (SELECT CASE WHEN length(x.body) THEN x.body ELSE '📷 Foto' END FROM messages x WHERE (x.sender_id = ? AND x.recipient_id = m.id) OR (x.sender_id = m.id AND x.recipient_id = ?) ORDER BY x.id DESC LIMIT 1) AS lastMessage,
+      (SELECT CASE WHEN length(x.body) THEN x.body WHEN x.attachment_type LIKE 'audio/%' THEN '🎤 Sprachnachricht' WHEN x.attachment_type = 'image/gif' THEN 'GIF' ELSE '📷 Foto' END FROM messages x WHERE (x.sender_id = ? AND x.recipient_id = m.id) OR (x.sender_id = m.id AND x.recipient_id = ?) ORDER BY x.id DESC LIMIT 1) AS lastMessage,
       (SELECT created_at FROM messages x WHERE (x.sender_id = ? AND x.recipient_id = m.id) OR (x.sender_id = m.id AND x.recipient_id = ?) ORDER BY x.id DESC LIMIT 1) AS lastMessageAt,
       (SELECT COUNT(*) FROM messages x WHERE x.sender_id = m.id AND x.recipient_id = ? AND x.read_at IS NULL) AS unreadCount
     FROM members m WHERE m.id <> ? ORDER BY lastMessageAt IS NULL, lastMessageAt DESC, lower(m.name)
   `).all(req.member.id, req.member.id, req.member.id, req.member.id, req.member.id, req.member.id);
-  const familyLast = db.prepare("SELECT CASE WHEN length(body) THEN body ELSE '📷 Foto' END AS lastMessage, created_at AS lastMessageAt FROM family_messages ORDER BY id DESC LIMIT 1").get() || {};
+  const familyLast = db.prepare("SELECT CASE WHEN length(body) THEN body WHEN attachment_type LIKE 'audio/%' THEN '🎤 Sprachnachricht' WHEN attachment_type = 'image/gif' THEN 'GIF' ELSE '📷 Foto' END AS lastMessage, created_at AS lastMessageAt FROM family_messages ORDER BY id DESC LIMIT 1").get() || {};
   const familyRead = db.prepare('SELECT last_read_message_id AS lastReadId FROM family_read_state WHERE member_id = ?').get(req.member.id)?.lastReadId || 0;
   const familyUnread = db.prepare('SELECT COUNT(*) AS count FROM family_messages WHERE id > ? AND sender_id <> ?').get(familyRead, req.member.id).count;
   const family = { id: 'family', name: 'Familienchat', role: 'Alle zusammen', color: '#ff9f0a', ...familyLast, unreadCount: Number(familyUnread) };
@@ -429,24 +457,29 @@ app.post('/api/messages', requireAuth, (req, res) => {
   const recipientId = Number(req.body?.recipientId);
   const typedBody = String(req.body?.body || '').trim();
   if (typedBody.length > 1000) return res.status(400).json({ error: 'Die Nachricht darf höchstens 1.000 Zeichen lang sein.' });
+  const recipient = family ? null : db.prepare('SELECT id, name FROM members WHERE id = ? AND id <> ?').get(recipientId, req.member.id);
+  if (!family && !recipient) return res.status(404).json({ error: 'Empfänger nicht gefunden.' });
   let attachment;
-  try { attachment = storeMessageImage(req.body?.image); }
-  catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
-  if (!typedBody && !attachment.attachmentPath) return res.status(400).json({ error: 'Schreibe eine Nachricht oder wähle ein Foto aus.' });
+  let reply;
+  try {
+    reply = resolveReply({ family, recipientId, replyTo: req.body?.replyTo, currentMemberId: req.member.id });
+    attachment = storeMessageAttachment(req.body?.attachment || req.body?.image);
+  } catch (error) { return res.status(error.status || 400).json({ error: error.message }); }
+  if (!typedBody && !attachment.attachmentPath) return res.status(400).json({ error: 'Schreibe eine Nachricht oder füge ein Medium hinzu.' });
   try {
     if (family) {
-      const result = db.prepare('INSERT INTO family_messages (sender_id, body, attachment_path, attachment_type) VALUES (?, ?, ?, ?)').run(req.member.id, typedBody, attachment.attachmentPath, attachment.attachmentType);
+      const result = db.prepare('INSERT INTO family_messages (sender_id, body, attachment_path, attachment_type, reply_kind, reply_message_id, reply_sender_name, reply_body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(req.member.id, typedBody, attachment.attachmentPath, attachment.attachmentType, reply.kind, reply.messageId, reply.senderName, reply.body);
       const message = serializeMessage(db.prepare(`${familyMessageRow} WHERE msg.id = ?`).get(result.lastInsertRowid), 'family', req.member.id);
-      const preview = typedBody || '📷 hat ein Foto geteilt.';
+      const preview = typedBody || (attachment.attachmentType.startsWith('audio/') ? '🎤 hat eine Sprachnachricht gesendet.' : attachment.attachmentType === 'image/gif' ? 'hat ein GIF geteilt.' : '📷 hat ein Foto geteilt.');
       void sendPush({ title: `${req.member.name} im Familienchat`, body: preview.length > 120 ? `${preview.slice(0, 117)}…` : preview, tag: 'messages-family', url: '/?app=messages&with=family', icon: '/icons/houseos-192.png' }, { excludeMemberId: req.member.id });
       return res.status(201).json(message);
     }
-    const recipient = db.prepare('SELECT id, name FROM members WHERE id = ? AND id <> ?').get(recipientId, req.member.id);
-    if (!recipient) { removeStoredImage(attachment.attachmentPath); return res.status(404).json({ error: 'Empfänger nicht gefunden.' }); }
-    const storedBody = typedBody || '📷 Foto';
-    const result = db.prepare('INSERT INTO messages (sender_id, recipient_id, body, attachment_path, attachment_type) VALUES (?, ?, ?, ?, ?)').run(req.member.id, recipient.id, storedBody, attachment.attachmentPath, attachment.attachmentType);
+    const storedBody = typedBody || attachmentPreview(attachment.attachmentType);
+    const result = db.prepare('INSERT INTO messages (sender_id, recipient_id, body, attachment_path, attachment_type, reply_kind, reply_message_id, reply_sender_name, reply_body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(req.member.id, recipient.id, storedBody, attachment.attachmentPath, attachment.attachmentType, reply.kind, reply.messageId, reply.senderName, reply.body);
     const message = serializeMessage(db.prepare(`${messageRow} WHERE msg.id = ?`).get(result.lastInsertRowid), 'direct', req.member.id);
-    const preview = typedBody || '📷 hat dir ein Foto geschickt.';
+    const preview = typedBody || (attachment.attachmentType.startsWith('audio/') ? '🎤 hat dir eine Sprachnachricht geschickt.' : attachment.attachmentType === 'image/gif' ? 'hat dir ein GIF geschickt.' : '📷 hat dir ein Foto geschickt.');
     void sendPush({ title: `Nachricht von ${req.member.name}`, body: preview.length > 120 ? `${preview.slice(0, 117)}…` : preview, tag: `messages-${req.member.id}`, url: `/?app=messages&with=${req.member.id}`, icon: '/icons/houseos-192.png' }, { memberName: recipient.name });
     res.status(201).json(message);
   } catch (error) {
@@ -468,10 +501,10 @@ app.patch('/api/messages/:kind/:messageId', requireAuth, (req, res) => {
   if (!['direct', 'family'].includes(kind) || !Number.isInteger(messageId)) return res.status(400).json({ error: 'Ungültige Nachricht.' });
   if (body.length > 1000) return res.status(400).json({ error: 'Die Nachricht darf höchstens 1.000 Zeichen lang sein.' });
   const table = kind === 'family' ? 'family_messages' : 'messages';
-  const existing = db.prepare(`SELECT id, attachment_path AS attachmentPath FROM ${table} WHERE id = ? AND sender_id = ?`).get(messageId, req.member.id);
+  const existing = db.prepare(`SELECT id, attachment_path AS attachmentPath, attachment_type AS attachmentType FROM ${table} WHERE id = ? AND sender_id = ?`).get(messageId, req.member.id);
   if (!existing) return res.status(404).json({ error: 'Nachricht nicht gefunden oder nicht von dir.' });
   if (!body && !existing.attachmentPath) return res.status(400).json({ error: 'Die Nachricht darf nicht leer sein.' });
-  const storedBody = body || (kind === 'direct' ? '📷 Foto' : '');
+  const storedBody = body || (kind === 'direct' ? attachmentPreview(existing.attachmentType) : '');
   db.prepare(`UPDATE ${table} SET body = ?, edited_at = CURRENT_TIMESTAMP WHERE id = ?`).run(storedBody, messageId);
   const row = db.prepare(`${kind === 'family' ? familyMessageRow : messageRow} WHERE msg.id = ?`).get(messageId);
   res.json(serializeMessage(row, kind, req.member.id));
@@ -510,7 +543,7 @@ app.post('/api/messages/:kind/:messageId/reactions', requireAuth, (req, res) => 
 
 app.get('/api/message-media/:filename', requireAuth, (req, res) => {
   const filename = String(req.params.filename);
-  if (!/^[a-f0-9]{48}\.(?:jpg|png|webp)$/.test(filename)) return res.status(404).end();
+  if (!/^[a-f0-9]{48}\.(?:jpg|png|webp|gif|webm|ogg|m4a|mp3)$/.test(filename)) return res.status(404).end();
   const direct = db.prepare('SELECT attachment_type AS type FROM messages WHERE attachment_path = ? AND (sender_id = ? OR recipient_id = ?)').get(filename, req.member.id, req.member.id);
   const family = direct ? null : db.prepare('SELECT attachment_type AS type FROM family_messages WHERE attachment_path = ?').get(filename);
   const media = direct || family;

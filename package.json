@@ -1,7 +1,7 @@
 {
   "name": "houseos-v2",
   "private": true,
-  "version": "0.15.0",
+  "version": "0.16.0",
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -n API,UI -c blue,magenta \"node --watch server/index.js\" \"vite\"",
