@@ -93,7 +93,7 @@ Für Direktdruck auf dem Raspberry Pi muss CUPS einschließlich der Befehle `lp`
 
 - **Heute:** Wetter, nächste Familientermine, offene Aufgaben, Speiseplan und Tagesübersicht
 - **Aufgaben & Routinen 2.0:** Aufgaben mit Notizen, Punkten und Checklisten anlegen, flexibel wiederholen und die Zuständigkeit automatisch zwischen Mitgliedern rotieren lassen
-- **Familienkalender:** Gemeinsame, mehrtägige und wiederkehrende Termine mit Teilnehmern, Ort, Farbe und Erinnerungszeit planen
+- **Familienkalender:** Gemeinsame, mehrtägige und wiederkehrende Termine mit Teilnehmern, Ort, Farbe und Erinnerungszeit planen; `.ics`-Dateien importieren und den Kalender über einen geschützten iCal-Link auf anderen Geräten abonnieren
 - **Haushaltspunkte:** 10 Punkte pro erledigter Aufgabe, persönliche Wochenserien und Auszeichnungen
 - **Einkaufsassistent:** Gemeinsame, nach Abteilungen sortierte Liste mit Favoriten, Kaufhistorie, Rezeptvorschlägen und Schnellhinzufügen
 - **Speiseplan & Rezepte:** Mahlzeiten wochenweise planen, Rezepte mit Portionen, Zutaten, Zubereitungszeit und Kochschritten speichern und einen vollständigen Wocheneinkauf erzeugen

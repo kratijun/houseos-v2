@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import webpush from 'web-push';
+import { buildICalendar, parseICalendar } from './ical.js';
 import { listPrinters, printHouseReceipt } from './printer.js';
 import { getLatestRelease, validRepository } from './updater.js';
 import { controlBluetoothDevice, getBluetoothState, scanBluetoothDevices, setBluetoothPower } from './bluetooth.js';
@@ -81,6 +82,8 @@ db.exec(`
     color TEXT NOT NULL DEFAULT '#0a84ff',
     recurrence TEXT NOT NULL DEFAULT 'none',
     reminder_minutes INTEGER NOT NULL DEFAULT 30,
+    ical_uid TEXT NOT NULL DEFAULT '',
+    ical_source TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS shopping_catalog (
@@ -107,7 +110,8 @@ db.exec(`
   );
   CREATE TABLE IF NOT EXISTS device_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    weather_city TEXT NOT NULL DEFAULT ''
+    weather_city TEXT NOT NULL DEFAULT '',
+    calendar_ical_token TEXT NOT NULL DEFAULT ''
   );
   CREATE TABLE IF NOT EXISTS print_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -193,6 +197,10 @@ ensureColumn('dishes', 'steps', "TEXT NOT NULL DEFAULT '[]'");
 ensureColumn('dishes', 'prep_minutes', 'INTEGER NOT NULL DEFAULT 30');
 ensureColumn('dishes', 'category', "TEXT NOT NULL DEFAULT 'Hauptgericht'");
 ensureColumn('dishes', 'favorite', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('calendar_events', 'ical_uid', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('calendar_events', 'ical_source', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('device_settings', 'calendar_ical_token', "TEXT NOT NULL DEFAULT ''");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS calendar_events_ical_uid_idx ON calendar_events (ical_uid) WHERE ical_uid <> ''");
 for (const table of ['messages', 'family_messages']) {
   ensureColumn(table, 'reply_kind', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(table, 'reply_message_id', 'INTEGER');
@@ -222,6 +230,15 @@ const seed = db.transaction(() => {
 seed();
 db.prepare("INSERT OR IGNORE INTO print_settings (id, printer_name, paper_width, auto_cut) VALUES (1, '', 58, 1)").run();
 db.prepare("INSERT OR IGNORE INTO device_settings (id, weather_city) VALUES (1, '')").run();
+const calendarIcalToken = () => {
+  let token = db.prepare('SELECT calendar_ical_token AS token FROM device_settings WHERE id = 1').get()?.token || '';
+  if (!/^[A-Za-z0-9_-]{32,}$/.test(token)) {
+    token = randomBytes(32).toString('base64url');
+    db.prepare('UPDATE device_settings SET calendar_ical_token = ? WHERE id = 1').run(token);
+  }
+  return token;
+};
+calendarIcalToken();
 
 const app = express();
 app.use(express.json({ limit: '8mb' }));
@@ -942,8 +959,8 @@ const collections = {
   },
   calendar: {
     table: 'calendar_events',
-    select: 'SELECT id, title, description, start_date AS startDate, start_time AS startTime, end_date AS endDate, end_time AS endTime, all_day AS allDay, location, participants, color, recurrence, reminder_minutes AS reminderMinutes FROM calendar_events ORDER BY start_date ASC, start_time ASC',
-    insert: db.prepare('INSERT INTO calendar_events (id, title, description, start_date, start_time, end_date, end_time, all_day, location, participants, color, recurrence, reminder_minutes) VALUES (@id, @title, @description, @startDate, @startTime, @endDate, @endTime, @allDay, @location, @participants, @color, @recurrence, @reminderMinutes)'),
+    select: 'SELECT id, title, description, start_date AS startDate, start_time AS startTime, end_date AS endDate, end_time AS endTime, all_day AS allDay, location, participants, color, recurrence, reminder_minutes AS reminderMinutes, ical_uid AS icalUid, ical_source AS icalSource FROM calendar_events ORDER BY start_date ASC, start_time ASC',
+    insert: db.prepare('INSERT INTO calendar_events (id, title, description, start_date, start_time, end_date, end_time, all_day, location, participants, color, recurrence, reminder_minutes, ical_uid, ical_source) VALUES (@id, @title, @description, @startDate, @startTime, @endDate, @endTime, @allDay, @location, @participants, @color, @recurrence, @reminderMinutes, @icalUid, @icalSource)'),
     normalize: (item) => ({
       id: Number(item.id), title: String(item.title || '').trim().slice(0, 120), description: String(item.description || '').trim().slice(0, 1000),
       startDate: /^\d{4}-\d{2}-\d{2}$/.test(String(item.startDate || '')) ? String(item.startDate) : '', startTime: String(item.startTime || ''),
@@ -953,6 +970,8 @@ const collections = {
       color: /^#[0-9a-f]{6}$/i.test(String(item.color || '')) ? String(item.color) : '#0a84ff',
       recurrence: ['none', 'daily', 'weekly', 'monthly', 'yearly'].includes(item.recurrence) ? item.recurrence : 'none',
       reminderMinutes: Math.max(0, Math.min(10080, Number(item.reminderMinutes) || 0)),
+      icalUid: String(item.icalUid || '').trim().replace(/[\r\n]/g, '').slice(0, 255),
+      icalSource: String(item.icalSource || '').trim().slice(0, 120),
     }),
     deserialize: (row) => { try { return { ...row, allDay: Boolean(row.allDay), participants: JSON.parse(row.participants || '[]') }; } catch { return { ...row, allDay: Boolean(row.allDay), participants: [] }; } },
   },
@@ -1098,6 +1117,93 @@ for (const [name, config] of Object.entries(collections)) {
     res.json({ ok: true, ...(name === 'tasks' && { progress: progressPayload(req.member.id) }) });
   });
 }
+
+const calendarFeedResponse = (res, disposition = 'inline') => {
+  const body = buildICalendar(collectionPayload('calendar', collections.calendar));
+  res.setHeader('Content-Type', 'text/calendar; charset=utf-8');
+  res.setHeader('Content-Disposition', `${disposition}; filename="houseos-familienkalender.ics"`);
+  res.setHeader('Cache-Control', 'no-cache, private');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.send(body);
+};
+const calendarFeedUrl = req => {
+  const forwardedProtocol = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const protocol = /^(?:http|https)$/.test(forwardedProtocol) ? forwardedProtocol : req.protocol;
+  return `${protocol}://${req.get('host')}/api/calendar/ical/feed/${encodeURIComponent(calendarIcalToken())}/calendar.ics`;
+};
+const validCalendarFeedToken = value => {
+  const expected = Buffer.from(calendarIcalToken()); const actual = Buffer.from(String(value || ''));
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+};
+
+app.get('/api/calendar/ical/settings', requireAuth, (req, res) => {
+  const counts = db.prepare("SELECT COUNT(*) AS eventCount, SUM(CASE WHEN ical_uid <> '' THEN 1 ELSE 0 END) AS importedCount FROM calendar_events").get();
+  res.json({
+    feedUrl: calendarFeedUrl(req),
+    eventCount: Number(counts.eventCount) || 0,
+    importedCount: Number(counts.importedCount) || 0,
+    canRotate: req.member.isAdmin,
+  });
+});
+
+app.get('/api/calendar/ical/download', requireAuth, (_req, res) => calendarFeedResponse(res, 'attachment'));
+app.get('/api/calendar/ical/feed/:token/calendar.ics', (req, res) => validCalendarFeedToken(req.params.token) ? calendarFeedResponse(res) : res.status(404).send('Kalender nicht gefunden.'));
+
+app.post('/api/calendar/ical/token', requireAdmin, (req, res) => {
+  const token = randomBytes(32).toString('base64url');
+  db.prepare('UPDATE device_settings SET calendar_ical_token = ? WHERE id = 1').run(token);
+  res.json({ feedUrl: calendarFeedUrl(req) });
+});
+
+app.post('/api/calendar/ical/import', requireAuth, (req, res) => {
+  const content = String(req.body?.content || '');
+  const sourceName = String(req.body?.sourceName || 'iCal-Import').trim().slice(0, 120);
+  if (!content || Buffer.byteLength(content) > 2 * 1024 * 1024) return res.status(400).json({ error: 'Bitte wähle eine iCal-Datei mit höchstens 2 MB.' });
+  try {
+    const parsed = parseICalendar(content, { sourceName });
+    const events = [...new Map(parsed.map(event => [event.icalUid, event])).values()];
+    const config = collections.calendar;
+    const previousItems = collectionPayload('calendar', config);
+    const previousById = new Map(previousItems.map(event => [Number(event.id), event]));
+    let nextId = Math.max(Date.now(), Number(db.prepare('SELECT MAX(id) AS id FROM calendar_events').get()?.id || 0) + 1);
+    const result = db.transaction(() => {
+      let imported = 0; let updated = 0; let removed = 0; let unchanged = 0;
+      for (const event of events) {
+        let existing = db.prepare('SELECT id FROM calendar_events WHERE ical_uid = ?').get(event.icalUid);
+        const internalId = Number(String(event.icalUid).match(/^houseos-(\d+)@houseos\.local$/)?.[1] || 0);
+        if (!existing && internalId) existing = db.prepare('SELECT id FROM calendar_events WHERE id = ?').get(internalId);
+        if (event.cancelled) {
+          if (existing) {
+            db.prepare('DELETE FROM calendar_reminders WHERE event_id = ?').run(existing.id);
+            db.prepare('DELETE FROM calendar_events WHERE id = ?').run(existing.id);
+            removed += 1;
+          }
+          continue;
+        }
+        const id = existing?.id || nextId++;
+        const normalized = config.normalize({ ...event, id });
+        if (existing) {
+          const previous = previousById.get(Number(id));
+          if (previous && JSON.stringify(config.normalize(previous)) === JSON.stringify(normalized)) { unchanged += 1; continue; }
+          db.prepare('DELETE FROM calendar_reminders WHERE event_id = ?').run(id);
+          db.prepare('DELETE FROM calendar_events WHERE id = ?').run(id);
+          updated += 1;
+        } else imported += 1;
+        config.insert.run(normalized);
+      }
+      return { imported, updated, removed, unchanged };
+    })();
+    const items = collectionPayload('calendar', config);
+    const importedCount = Number(db.prepare("SELECT COUNT(*) AS count FROM calendar_events WHERE ical_uid <> ''").get()?.count) || 0;
+    broadcastSync('calendar');
+    const changes = [result.imported && `${result.imported} neu`, result.updated && `${result.updated} aktualisiert`, result.removed && `${result.removed} entfernt`].filter(Boolean).join(', ');
+    if (changes) void sendPush({ title: 'iCal-Kalender importiert', body: `${req.member.name}: ${changes}.`, tag: 'calendar-import', url: '/?app=calendar', icon: '/icons/houseos-192.png' }, { excludeMemberId: req.member.id });
+    const firstDate = events.filter(event => !event.cancelled).map(event => event.startDate).sort()[0] || '';
+    res.json({ ok: true, ...result, total: events.length, importedCount, items, firstDate });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Der iCal-Kalender konnte nicht importiert werden.' });
+  }
+});
 
 app.get('/api/progress', requireAuth, (req, res) => res.json(progressPayload(req.member.id)));
 
