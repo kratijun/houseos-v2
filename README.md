@@ -91,11 +91,12 @@ Für Direktdruck auf dem Raspberry Pi muss CUPS einschließlich der Befehle `lp`
 
 ## Enthaltene Apps
 
-- **Heute:** Wetter, Termin, offene Aufgaben und Tagesübersicht
-- **Aufgaben:** Aufgaben anlegen, Personen zuweisen, abhaken und löschen
+- **Heute:** Wetter, nächste Familientermine, offene Aufgaben, Speiseplan und Tagesübersicht
+- **Aufgaben & Routinen 2.0:** Aufgaben mit Notizen, Punkten und Checklisten anlegen, flexibel wiederholen und die Zuständigkeit automatisch zwischen Mitgliedern rotieren lassen
+- **Familienkalender:** Gemeinsame, mehrtägige und wiederkehrende Termine mit Teilnehmern, Ort, Farbe und Erinnerungszeit planen
 - **Haushaltspunkte:** 10 Punkte pro erledigter Aufgabe, persönliche Wochenserien und Auszeichnungen
-- **Einkauf:** Gemeinsame Einkaufsliste mit frei editierbaren Mengen und Kategorien verwalten
-- **Speiseplan:** Wochenweise Frühstück, Mittag- und Abendessen samt Zutaten planen und fehlende Zutaten direkt auf die Einkaufsliste setzen
+- **Einkaufsassistent:** Gemeinsame, nach Abteilungen sortierte Liste mit Favoriten, Kaufhistorie, Rezeptvorschlägen und Schnellhinzufügen
+- **Speiseplan & Rezepte:** Mahlzeiten wochenweise planen, Rezepte mit Portionen, Zutaten, Zubereitungszeit und Kochschritten speichern und einen vollständigen Wocheneinkauf erzeugen
 - **Bärli:** Antippbares HouseOS-Tamagotchi mit Bedürfnissen, Aktionszeiten, Leveln und kombinierbarer Kleidung
 - **Print Center:** Tages-, Einkaufs- und Aufgabenbons als 58-/80-mm-Vorschau und Direktdruck
 - **Mitglieder:** Haushaltsmitglieder anlegen, bearbeiten und entfernen

@@ -67,6 +67,38 @@ db.exec(`
     ingredients TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS calendar_events (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    start_date TEXT NOT NULL,
+    start_time TEXT NOT NULL DEFAULT '',
+    end_date TEXT NOT NULL,
+    end_time TEXT NOT NULL DEFAULT '',
+    all_day INTEGER NOT NULL DEFAULT 0,
+    location TEXT NOT NULL DEFAULT '',
+    participants TEXT NOT NULL DEFAULT '[]',
+    color TEXT NOT NULL DEFAULT '#0a84ff',
+    recurrence TEXT NOT NULL DEFAULT 'none',
+    reminder_minutes INTEGER NOT NULL DEFAULT 30,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS shopping_catalog (
+    id INTEGER PRIMARY KEY,
+    text TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'Sonstiges',
+    quantity TEXT NOT NULL DEFAULT '1 Stück',
+    favorite INTEGER NOT NULL DEFAULT 0,
+    usage_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS calendar_reminders (
+    event_id INTEGER NOT NULL,
+    occurrence_date TEXT NOT NULL,
+    reminder_minutes INTEGER NOT NULL,
+    sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (event_id, occurrence_date, reminder_minutes)
+  );
   CREATE TABLE IF NOT EXISTS print_settings (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     printer_name TEXT NOT NULL DEFAULT '',
@@ -142,11 +174,25 @@ const ensureColumn = (table, column, definition) => {
 ensureColumn('members', 'pin_hash', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('tasks', 'due_date', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('tasks', 'recurrence', "TEXT NOT NULL DEFAULT 'none'");
+ensureColumn('tasks', 'notes', "TEXT NOT NULL DEFAULT ''");
+ensureColumn('tasks', 'recurrence_interval', 'INTEGER NOT NULL DEFAULT 1');
+ensureColumn('tasks', 'recurrence_days', "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn('tasks', 'rotation', "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn('tasks', 'checklist', "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn('tasks', 'points', 'INTEGER NOT NULL DEFAULT 10');
+ensureColumn('tasks', 'parent_task_id', 'INTEGER');
+ensureColumn('tasks', 'series_id', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('shopping', 'quantity', "TEXT NOT NULL DEFAULT '1 Stück'");
 ensureColumn('messages', 'attachment_path', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('messages', 'attachment_type', "TEXT NOT NULL DEFAULT ''");
 ensureColumn('messages', 'edited_at', 'TEXT');
 ensureColumn('family_messages', 'edited_at', 'TEXT');
+ensureColumn('meal_plans', 'servings', 'INTEGER NOT NULL DEFAULT 2');
+ensureColumn('dishes', 'servings', 'INTEGER NOT NULL DEFAULT 2');
+ensureColumn('dishes', 'steps', "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn('dishes', 'prep_minutes', 'INTEGER NOT NULL DEFAULT 30');
+ensureColumn('dishes', 'category', "TEXT NOT NULL DEFAULT 'Hauptgericht'");
+ensureColumn('dishes', 'favorite', 'INTEGER NOT NULL DEFAULT 0');
 for (const table of ['messages', 'family_messages']) {
   ensureColumn(table, 'reply_kind', "TEXT NOT NULL DEFAULT ''");
   ensureColumn(table, 'reply_message_id', 'INTEGER');
@@ -269,6 +315,44 @@ const sendPush = async (payload, { excludeMemberId = null, memberName = '', endp
   }));
 };
 
+const localDateString = date => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+const calendarEventOccursOn = (event, value) => {
+  if (!event.startDate || value < event.startDate) return false;
+  if (!event.recurrence || event.recurrence === 'none') return value === event.startDate;
+  const start = new Date(`${event.startDate}T12:00:00`); const current = new Date(`${value}T12:00:00`);
+  const days = Math.round((current - start) / 86_400_000);
+  if (event.recurrence === 'daily') return days >= 0;
+  if (event.recurrence === 'weekly') return days >= 0 && days % 7 === 0;
+  if (event.recurrence === 'monthly') return current.getDate() === start.getDate();
+  if (event.recurrence === 'yearly') return current.getDate() === start.getDate() && current.getMonth() === start.getMonth();
+  return false;
+};
+const reminderLead = minutes => minutes >= 10080 ? 'in einer Woche' : minutes >= 1440 ? 'morgen' : minutes >= 60 ? `in ${Math.round(minutes / 60)} Std.` : minutes > 0 ? `in ${minutes} Min.` : 'jetzt';
+const queueCalendarReminders = async () => {
+  const now = new Date();
+  const events = db.prepare("SELECT id, title, start_date AS startDate, start_time AS startTime, all_day AS allDay, location, participants, recurrence, reminder_minutes AS reminderMinutes FROM calendar_events WHERE reminder_minutes > 0").all();
+  for (const event of events) {
+    for (let offset = 0; offset <= 7; offset += 1) {
+      const day = new Date(now); day.setHours(12, 0, 0, 0); day.setDate(day.getDate() + offset);
+      const occurrenceDate = localDateString(day);
+      if (!calendarEventOccursOn(event, occurrenceDate)) continue;
+      const eventAt = new Date(`${occurrenceDate}T${event.allDay || !event.startTime ? '09:00' : event.startTime}:00`);
+      const reminderAt = new Date(eventAt.getTime() - Number(event.reminderMinutes) * 60_000);
+      if (reminderAt > now || eventAt.getTime() + 600_000 < now.getTime()) continue;
+      const inserted = db.prepare('INSERT OR IGNORE INTO calendar_reminders (event_id, occurrence_date, reminder_minutes) VALUES (?, ?, ?)').run(event.id, occurrenceDate, event.reminderMinutes);
+      if (!inserted.changes) continue;
+      let participants = [];
+      try { participants = JSON.parse(event.participants || '[]'); } catch {}
+      const payload = { title: `Termin ${reminderLead(event.reminderMinutes)}`, body: `${event.title}${event.location ? ` · ${event.location}` : ''}`, tag: `calendar-reminder-${event.id}`, url: '/?app=calendar', icon: '/icons/houseos-192.png' };
+      if (participants.length) await Promise.allSettled(participants.map(memberName => sendPush(payload, { memberName })));
+      else await sendPush(payload);
+    }
+  }
+  db.prepare("DELETE FROM calendar_reminders WHERE sent_at < datetime('now', '-90 days')").run();
+};
+setTimeout(() => void queueCalendarReminders(), 3_000);
+setInterval(() => void queueCalendarReminders(), 60_000);
+
 const queueCollectionPush = (name, previousItems, items, actor) => {
   const previous = new Map(previousItems.map(item => [Number(item.id), item]));
   const current = new Map(items.map(item => [Number(item.id), item]));
@@ -312,6 +396,20 @@ const queueCollectionPush = (name, previousItems, items, actor) => {
     if (removed.length) {
       const body = removed.length === 1 ? `${actor.name} hat ${removed[0].name} aus dem Plan entfernt.` : `${actor.name} hat ${removed.length} Einträge entfernt.`;
       void sendPush({ title: 'Speiseplan geändert', body, tag: 'meal-plan', url: '/?app=meals', icon: '/icons/houseos-192.png' }, options);
+    }
+  }
+
+  if (name === 'calendar') {
+    for (const event of added) {
+      const when = new Date(`${event.startDate}T12:00:00`).toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit' });
+      void sendPush({ title: 'Neuer Familientermin', body: `${actor.name}: ${event.title} · ${when}`, tag: `calendar-${event.id}`, url: '/?app=calendar', icon: '/icons/houseos-192.png' }, options);
+    }
+    for (const event of changed) {
+      void sendPush({ title: 'Termin geändert', body: `${actor.name} hat „${event.title}“ aktualisiert.`, tag: `calendar-${event.id}`, url: '/?app=calendar', icon: '/icons/houseos-192.png' }, options);
+    }
+    if (removed.length) {
+      const body = removed.length === 1 ? `${actor.name} hat „${removed[0].title}“ entfernt.` : `${actor.name} hat ${removed.length} Termine entfernt.`;
+      void sendPush({ title: 'Kalender aktualisiert', body, tag: 'calendar', url: '/?app=calendar', icon: '/icons/houseos-192.png' }, options);
     }
   }
 };
@@ -782,9 +880,25 @@ const collections = {
     normalize: (item) => ({ id: Number(item.id), name: String(item.name || '').trim(), role: String(item.role || 'Mitglied').trim(), color: String(item.color || '#007aff'), isAdmin: item.isAdmin ? 1 : 0, pinHash: '' }),
   },
   tasks: {
-    select: 'SELECT id, text, done, person, time, due_date AS dueDate, recurrence FROM tasks ORDER BY done ASC, due_date ASC, time ASC, created_at ASC',
-    insert: db.prepare('INSERT INTO tasks (id, text, done, person, time, due_date, recurrence) VALUES (@id, @text, @done, @person, @time, @dueDate, @recurrence)'),
-    normalize: (item) => ({ id: Number(item.id), text: String(item.text || '').trim(), done: item.done ? 1 : 0, person: String(item.person || ''), time: String(item.time || ''), dueDate: String(item.dueDate || ''), recurrence: ['none', 'daily', 'weekly', 'monthly'].includes(item.recurrence) ? item.recurrence : 'none' }),
+    select: 'SELECT id, text, done, person, time, due_date AS dueDate, recurrence, notes, recurrence_interval AS recurrenceInterval, recurrence_days AS recurrenceDays, rotation, checklist, points, parent_task_id AS parentTaskId, series_id AS seriesId FROM tasks ORDER BY done ASC, due_date ASC, time ASC, created_at ASC',
+    insert: db.prepare('INSERT INTO tasks (id, text, done, person, time, due_date, recurrence, notes, recurrence_interval, recurrence_days, rotation, checklist, points, parent_task_id, series_id) VALUES (@id, @text, @done, @person, @time, @dueDate, @recurrence, @notes, @recurrenceInterval, @recurrenceDays, @rotation, @checklist, @points, @parentTaskId, @seriesId)'),
+    normalize: (item) => ({
+      id: Number(item.id), text: String(item.text || '').trim(), done: item.done ? 1 : 0,
+      person: String(item.person || ''), time: String(item.time || ''), dueDate: String(item.dueDate || ''),
+      recurrence: ['none', 'daily', 'weekdays', 'weekly', 'monthly'].includes(item.recurrence) ? item.recurrence : 'none',
+      notes: String(item.notes || '').trim().slice(0, 1000),
+      recurrenceInterval: Math.max(1, Math.min(30, Number(item.recurrenceInterval) || 1)),
+      recurrenceDays: JSON.stringify((Array.isArray(item.recurrenceDays) ? item.recurrenceDays : []).map(Number).filter(day => day >= 1 && day <= 7)),
+      rotation: JSON.stringify((Array.isArray(item.rotation) ? item.rotation : []).map(name => String(name).trim()).filter(Boolean).slice(0, 20)),
+      checklist: JSON.stringify((Array.isArray(item.checklist) ? item.checklist : []).map((entry, index) => ({ id: String(entry?.id || index), text: String(entry?.text || '').trim(), done: Boolean(entry?.done) })).filter(entry => entry.text).slice(0, 30)),
+      points: Math.max(0, Math.min(100, Number.isFinite(Number(item.points)) ? Number(item.points) : 10)),
+      parentTaskId: Number(item.parentTaskId) || null,
+      seriesId: String(item.seriesId || (item.recurrence && item.recurrence !== 'none' ? `series-${item.id}` : '')),
+    }),
+    deserialize: (row) => {
+      const parse = (value) => { try { return JSON.parse(value || '[]'); } catch { return []; } };
+      return { ...row, done: Boolean(row.done), recurrenceDays: parse(row.recurrenceDays), rotation: parse(row.rotation), checklist: parse(row.checklist) };
+    },
   },
   shopping: {
     select: 'SELECT id, text, checked, category, quantity FROM shopping ORDER BY created_at ASC',
@@ -793,13 +907,14 @@ const collections = {
   },
   mealplans: {
     table: 'meal_plans',
-    select: "SELECT id, date, meal_type AS mealType, name, ingredients FROM meal_plans ORDER BY date ASC, CASE meal_type WHEN 'breakfast' THEN 1 WHEN 'lunch' THEN 2 ELSE 3 END",
-    insert: db.prepare('INSERT INTO meal_plans (id, date, meal_type, name, ingredients) VALUES (@id, @date, @mealType, @name, @ingredients)'),
+    select: "SELECT id, date, meal_type AS mealType, name, ingredients, servings FROM meal_plans ORDER BY date ASC, CASE meal_type WHEN 'breakfast' THEN 1 WHEN 'lunch' THEN 2 ELSE 3 END",
+    insert: db.prepare('INSERT INTO meal_plans (id, date, meal_type, name, ingredients, servings) VALUES (@id, @date, @mealType, @name, @ingredients, @servings)'),
     normalize: (item) => ({
       id: Number(item.id),
       date: /^\d{4}-\d{2}-\d{2}$/.test(String(item.date || '')) ? String(item.date) : '',
       mealType: ['breakfast', 'lunch', 'dinner'].includes(item.mealType) ? item.mealType : 'lunch',
       name: String(item.name || '').trim(),
+      servings: Math.max(1, Math.min(24, Number(item.servings) || 2)),
       ingredients: JSON.stringify((Array.isArray(item.ingredients) ? item.ingredients : []).map(ingredient => ({ name: String(ingredient?.name || '').trim(), quantity: String(ingredient?.quantity || '1 Stück').trim() })).filter(ingredient => ingredient.name).slice(0, 40)),
     }),
     deserialize: (row) => {
@@ -808,18 +923,80 @@ const collections = {
     },
   },
   dishes: {
-    select: 'SELECT id, name, ingredients FROM dishes ORDER BY name COLLATE NOCASE ASC',
-    insert: db.prepare('INSERT INTO dishes (id, name, ingredients) VALUES (@id, @name, @ingredients)'),
+    select: 'SELECT id, name, ingredients, servings, steps, prep_minutes AS prepMinutes, category, favorite FROM dishes ORDER BY favorite DESC, name COLLATE NOCASE ASC',
+    insert: db.prepare('INSERT INTO dishes (id, name, ingredients, servings, steps, prep_minutes, category, favorite) VALUES (@id, @name, @ingredients, @servings, @steps, @prepMinutes, @category, @favorite)'),
     normalize: (item) => ({
       id: Number(item.id),
       name: String(item.name || '').trim(),
+      servings: Math.max(1, Math.min(24, Number(item.servings) || 2)),
+      steps: JSON.stringify((Array.isArray(item.steps) ? item.steps : []).map(step => String(step || '').trim()).filter(Boolean).slice(0, 30)),
+      prepMinutes: Math.max(0, Math.min(1440, Number(item.prepMinutes) || 0)),
+      category: String(item.category || 'Hauptgericht').trim().slice(0, 40),
+      favorite: item.favorite ? 1 : 0,
       ingredients: JSON.stringify((Array.isArray(item.ingredients) ? item.ingredients : []).map(ingredient => ({ name: String(ingredient?.name || '').trim(), quantity: String(ingredient?.quantity || '1 Stück').trim() })).filter(ingredient => ingredient.name).slice(0, 40)),
     }),
     deserialize: (row) => {
-      try { return { ...row, ingredients: JSON.parse(row.ingredients || '[]') }; }
-      catch { return { ...row, ingredients: [] }; }
+      try { return { ...row, favorite: Boolean(row.favorite), ingredients: JSON.parse(row.ingredients || '[]'), steps: JSON.parse(row.steps || '[]') }; }
+      catch { return { ...row, favorite: Boolean(row.favorite), ingredients: [], steps: [] }; }
     },
   },
+  calendar: {
+    table: 'calendar_events',
+    select: 'SELECT id, title, description, start_date AS startDate, start_time AS startTime, end_date AS endDate, end_time AS endTime, all_day AS allDay, location, participants, color, recurrence, reminder_minutes AS reminderMinutes FROM calendar_events ORDER BY start_date ASC, start_time ASC',
+    insert: db.prepare('INSERT INTO calendar_events (id, title, description, start_date, start_time, end_date, end_time, all_day, location, participants, color, recurrence, reminder_minutes) VALUES (@id, @title, @description, @startDate, @startTime, @endDate, @endTime, @allDay, @location, @participants, @color, @recurrence, @reminderMinutes)'),
+    normalize: (item) => ({
+      id: Number(item.id), title: String(item.title || '').trim().slice(0, 120), description: String(item.description || '').trim().slice(0, 1000),
+      startDate: /^\d{4}-\d{2}-\d{2}$/.test(String(item.startDate || '')) ? String(item.startDate) : '', startTime: String(item.startTime || ''),
+      endDate: /^\d{4}-\d{2}-\d{2}$/.test(String(item.endDate || '')) ? String(item.endDate) : String(item.startDate || ''), endTime: String(item.endTime || ''),
+      allDay: item.allDay ? 1 : 0, location: String(item.location || '').trim().slice(0, 160),
+      participants: JSON.stringify((Array.isArray(item.participants) ? item.participants : []).map(name => String(name).trim()).filter(Boolean).slice(0, 20)),
+      color: /^#[0-9a-f]{6}$/i.test(String(item.color || '')) ? String(item.color) : '#0a84ff',
+      recurrence: ['none', 'daily', 'weekly', 'monthly', 'yearly'].includes(item.recurrence) ? item.recurrence : 'none',
+      reminderMinutes: Math.max(0, Math.min(10080, Number(item.reminderMinutes) || 0)),
+    }),
+    deserialize: (row) => { try { return { ...row, allDay: Boolean(row.allDay), participants: JSON.parse(row.participants || '[]') }; } catch { return { ...row, allDay: Boolean(row.allDay), participants: [] }; } },
+  },
+  shoppingcatalog: {
+    table: 'shopping_catalog',
+    select: 'SELECT id, text, category, quantity, favorite, usage_count AS usageCount FROM shopping_catalog ORDER BY favorite DESC, usage_count DESC, text COLLATE NOCASE ASC',
+    insert: db.prepare('INSERT INTO shopping_catalog (id, text, category, quantity, favorite, usage_count) VALUES (@id, @text, @category, @quantity, @favorite, @usageCount)'),
+    normalize: (item) => ({ id: Number(item.id), text: String(item.text || '').trim().slice(0, 100), category: String(item.category || 'Sonstiges').trim().slice(0, 50), quantity: String(item.quantity || '1 Stück').trim().slice(0, 50), favorite: item.favorite ? 1 : 0, usageCount: Math.max(0, Number(item.usageCount) || 0) }),
+    deserialize: (row) => ({ ...row, favorite: Boolean(row.favorite) }),
+  },
+};
+
+const addRoutineDate = (dateValue, task) => {
+  const date = new Date(`${dateValue || new Date().toISOString().slice(0, 10)}T12:00:00`);
+  const interval = Math.max(1, Number(task.recurrenceInterval) || 1);
+  if (task.recurrence === 'daily') date.setDate(date.getDate() + interval);
+  else if (task.recurrence === 'weekly') date.setDate(date.getDate() + 7 * interval);
+  else if (task.recurrence === 'monthly') {
+    const targetDay = date.getDate();
+    date.setDate(1);
+    date.setMonth(date.getMonth() + interval);
+    const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+    date.setDate(Math.min(targetDay, lastDay));
+  }
+  else if (task.recurrence === 'weekdays') {
+    let days = [];
+    try { days = JSON.parse(task.recurrenceDays || '[]').map(Number); } catch {}
+    if (!days.length) days = [1, 2, 3, 4, 5];
+    do { date.setDate(date.getDate() + 1); } while (!days.includes(date.getDay() || 7));
+  }
+  return date.toISOString().slice(0, 10);
+};
+
+const nextRoutinePerson = (task) => {
+  let rotation = [];
+  try { rotation = JSON.parse(task.rotation || '[]'); } catch {}
+  if (rotation.length < 2) return task.person;
+  const index = rotation.findIndex(name => name.toLocaleLowerCase('de-DE') === String(task.person || '').toLocaleLowerCase('de-DE'));
+  return rotation[(index + 1 + rotation.length) % rotation.length] || task.person;
+};
+
+const resetChecklist = (value) => {
+  try { return JSON.stringify(JSON.parse(value || '[]').map(entry => ({ ...entry, done: false }))); }
+  catch { return '[]'; }
 };
 
 const startOfWeek = (date) => {
@@ -876,7 +1053,7 @@ for (const [name, config] of Object.entries(collections)) {
     if (!Array.isArray(req.body?.items)) return res.status(400).json({ error: 'Ungültige Daten.' });
     const previousItems = collectionPayload(name, config);
     const items = req.body.items.map(config.normalize);
-    if (items.some((item) => !item.id || (!(item.name || item.text)))) return res.status(400).json({ error: 'Name oder Text fehlt.' });
+    if (items.some((item) => !item.id || (!(item.name || item.text || item.title)))) return res.status(400).json({ error: 'Name oder Text fehlt.' });
     const replace = db.transaction(() => {
       const pinHashes = name === 'members' ? new Map(db.prepare('SELECT id, pin_hash AS pinHash FROM members').all().map(member => [member.id, member.pinHash])) : null;
       const previousTasks = name === 'tasks' ? new Map(db.prepare('SELECT id, done FROM tasks').all().map(task => [task.id, Boolean(task.done)])) : null;
@@ -890,15 +1067,33 @@ for (const [name, config] of Object.entries(collections)) {
         for (const item of items) {
           if (!item.done) {
             db.prepare('DELETE FROM task_completions WHERE task_id = ?').run(item.id);
+            db.prepare('DELETE FROM tasks WHERE parent_task_id = ? AND done = 0').run(item.id);
           } else if (previousTasks.get(item.id) === false) {
             const assignee = db.prepare('SELECT id FROM members WHERE lower(name) = lower(?)').get(item.person);
-            db.prepare("INSERT OR IGNORE INTO task_completions (task_id, member_id, person_name, points, completed_on) VALUES (?, ?, ?, 10, date('now', 'localtime'))").run(item.id, assignee?.id || req.member.id, item.person || req.member.name);
+            db.prepare("INSERT OR IGNORE INTO task_completions (task_id, member_id, person_name, points, completed_on) VALUES (?, ?, ?, ?, date('now', 'localtime'))").run(item.id, assignee?.id || req.member.id, item.person || req.member.name, item.points ?? 10);
           }
+        }
+        let nextId = Math.max(Date.now(), ...items.map(item => Number(item.id) || 0));
+        for (const item of items) {
+          if (!item.done || item.recurrence === 'none' || previousTasks.get(item.id) !== false) continue;
+          const existingChild = db.prepare('SELECT id FROM tasks WHERE parent_task_id = ?').get(item.id);
+          if (existingChild) continue;
+          nextId += 1;
+          config.insert.run({
+            ...item,
+            id: nextId,
+            done: 0,
+            person: nextRoutinePerson(item),
+            dueDate: addRoutineDate(item.dueDate, item),
+            checklist: resetChecklist(item.checklist),
+            parentTaskId: item.id,
+            seriesId: item.seriesId || `series-${item.id}`,
+          });
         }
       }
     });
     replace();
-    if (['tasks', 'shopping', 'mealplans'].includes(name)) queueCollectionPush(name, previousItems, collectionPayload(name, config), req.member);
+    if (['tasks', 'shopping', 'mealplans', 'calendar'].includes(name)) queueCollectionPush(name, previousItems, collectionPayload(name, config), req.member);
     broadcastSync(name);
     res.json({ ok: true, ...(name === 'tasks' && { progress: progressPayload(req.member.id) }) });
   });
