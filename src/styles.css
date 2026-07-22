@@ -1271,3 +1271,46 @@ html.touch-ui,html.touch-ui body{overscroll-behavior:none;-webkit-text-size-adju
   margin-inline: -14px;
   padding-bottom: calc(14px + env(safe-area-inset-bottom));
 }
+
+/* Lange Rezeptlisten scrollen innerhalb des Dialogs, damit die Aktionen erreichbar bleiben. */
+.recipe-editor-sheet .recipe-edit-section:first-of-type {
+  max-height: clamp(180px, 22vh, 260px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.meal-ingredient-list,
+.recipe-edit-section,
+.meal-editor,
+.task-editor-sheet,
+.event-editor-sheet,
+.recipe-editor-sheet,
+.recipe-detail-sheet,
+.ical-sheet {
+  touch-action: pan-y;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.drag-scrolling {
+  cursor: grabbing;
+  scroll-behavior: auto;
+  user-select: none;
+}
+.drag-scrolling * {
+  pointer-events: none;
+}
+.desktop:has(.sheet-backdrop) .dock,
+.desktop:has(.meal-editor-backdrop) .dock {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+@media(min-width:561px) {
+  .sheet-backdrop>.task-editor-sheet,
+  .sheet-backdrop>.event-editor-sheet,
+  .sheet-backdrop>.recipe-editor-sheet,
+  .sheet-backdrop>.recipe-detail-sheet,
+  .sheet-backdrop>.ical-sheet {
+    max-height: calc(100% - 48px);
+  }
+}

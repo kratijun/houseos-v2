@@ -1166,12 +1166,14 @@ function Launcher({ onOpen, onClose, currentMember, isPhone = false }) {
   </div>;
 }
 
+const POINTER_SCROLL_SURFACES = '.meal-ingredient-list, .recipe-edit-section, .meal-editor, .task-editor-sheet, .event-editor-sheet, .recipe-editor-sheet, .recipe-detail-sheet, .ical-sheet, .settings-detail, .settings-sidebar, .receipt-wrap, .window-content';
+
 function usePointerScroll() {
   const gesture = useRef(null);
   const suppressClick = useRef(false);
   const findSurface = target => {
-    let surface = target.closest?.('.settings-detail, .settings-sidebar, .receipt-wrap, .window-content');
-    while (surface && surface.scrollHeight <= surface.clientHeight + 1) surface = surface.parentElement?.closest?.('.settings-detail, .settings-sidebar, .receipt-wrap, .window-content');
+    let surface = target.closest?.(POINTER_SCROLL_SURFACES);
+    while (surface && surface.scrollHeight <= surface.clientHeight + 1) surface = surface.parentElement?.closest?.(POINTER_SCROLL_SURFACES);
     return surface;
   };
   const onPointerDown = event => {
