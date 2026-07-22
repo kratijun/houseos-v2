@@ -1254,3 +1254,20 @@ html.touch-ui,html.touch-ui body{overscroll-behavior:none;-webkit-text-size-adju
 @media(max-width:780px){.editor-grid{grid-template-columns:1fr 1fr}.task-toolbar{align-items:stretch;flex-direction:column}.task-toolbar>label{width:100%}.task-toolbar input{width:100%}.meal-heading-actions,.recipe-heading-actions{width:100%;align-items:stretch;flex-direction:column}.meal-hub-tabs{width:100%}.meal-hub-tabs button{flex:1;justify-content:center}.week-shopping{justify-content:center}.calendar-heading-actions{width:100%}.calendar-heading-actions>button{flex:1;justify-content:center}.calendar-controls{margin-top:0}.shopping-suggestions>div{grid-template-columns:repeat(2,minmax(0,1fr))}.recipe-detail-columns{grid-template-columns:1fr}.recipe-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:560px){.today-calendar-card>div{grid-template-columns:1fr}.sheet-backdrop{place-items:stretch;padding:0}.task-editor-sheet,.event-editor-sheet,.recipe-editor-sheet,.recipe-detail-sheet,.ical-sheet{width:100%;max-width:none;height:100%;max-height:none;padding:18px 14px calc(92px + env(safe-area-inset-bottom));border:0;border-radius:0}.task-editor-sheet>footer,.event-editor-sheet>footer,.recipe-editor-sheet>footer,.recipe-detail-sheet>footer,.ical-sheet>footer{position:sticky;bottom:calc(-92px - env(safe-area-inset-bottom));z-index:2;flex-wrap:wrap;margin-inline:-14px;padding:13px 14px calc(13px + env(safe-area-inset-bottom));background:inherit}.ical-options>article{grid-template-columns:36px minmax(0,1fr);padding:12px}.ical-options>article>i{width:34px;height:34px}.ical-url{grid-template-columns:1fr}.ical-url button{width:100%}.editor-grid{grid-template-columns:1fr 1fr}.task-v2-list>article{grid-template-columns:27px minmax(0,1fr) 32px;padding:11px 9px}.segmented-control{overflow-x:auto}.segmented-control button{flex:1;padding-inline:8px}.calendar-layout{display:block}.month-calendar>div>button{height:62px;padding:4px}.month-calendar button>span i{width:5px;height:5px;padding:0;border:0;border-radius:50%;background:var(--event-color);font-size:0}.month-calendar button>span{align-items:center;flex-direction:row}.month-calendar button>span small{display:none}.calendar-agenda{margin-top:10px}.shopping-suggestions>div{grid-template-columns:1fr 1fr}.assistant-list>div{grid-template-columns:28px 24px minmax(0,1fr) 80px 34px!important;gap:4px!important;padding-inline:8px}.assistant-list .shopping-row-quantity{width:80px}.recipe-grid{grid-template-columns:1fr}.recipe-input-row{grid-template-columns:minmax(0,1fr) 85px 34px}.recipe-detail-columns{display:block}.recipe-detail-columns>section+section{margin-top:20px}}
 @media(max-width:380px){.editor-grid{grid-template-columns:1fr}.shopping-suggestions>div{grid-template-columns:1fr}.assistant-list>div{grid-template-columns:28px 22px minmax(0,1fr) 34px!important}.assistant-list .shopping-row-quantity{grid-column:3;width:100%}}
+
+/* Hält die Aktionen im Speiseneditor auch bei langen Zutatenlisten erreichbar. */
+.meal-editor .meal-ingredient-list {
+  max-height: clamp(148px, 22vh, 240px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+.phone-layout .meal-editor {
+  padding-bottom: calc(18px + env(safe-area-inset-bottom));
+}
+.phone-layout .meal-editor>footer {
+  position: static;
+  margin-inline: -14px;
+  padding-bottom: calc(14px + env(safe-area-inset-bottom));
+}
